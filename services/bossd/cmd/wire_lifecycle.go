@@ -9,10 +9,23 @@ import (
 
 	"github.com/recurser/bossd/api/upstream"
 	"github.com/recurser/bossd/internal/adapter/sessionports"
+	"github.com/recurser/bossd/internal/repoorigin"
 	"github.com/recurser/bossd/internal/session"
 )
 
 func (w *daemonWiring) wireLifecycle() {
+	// Follow renamed origin remotes before anything keys on the stored origin:
+	// upstream registration and its repo snapshot, webhook routing, GitHub
+	// token minting and hosted proof uploads all read repos.origin_url. The
+	// check is a local `git remote get-url` per repo, so it is cheap enough for
+	// every start. `boss repo update --refresh-origin` corrects a running
+	// daemon's own reads; bosso's webhook routing only sees the new origin in
+	// the repo snapshot sent when the stream next connects.
+	func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		repoorigin.RefreshAll(ctx, w.worktrees, w.repos, log.Logger)
+	}()
 	w.lifecycle = session.NewLifecycle(w.sessions, w.repos, w.agentChats, w.cronJobs, w.worktrees, w.agentRunner, w.tmuxClient, w.ghProvider, log.Logger)
 	w.wireServe()
 	w.lifecycle.SetTelemetry(w.telemetryClient)

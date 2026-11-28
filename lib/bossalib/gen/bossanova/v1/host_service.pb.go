@@ -697,7 +697,12 @@ type SetRepairStatusRequest struct {
 	// same id, refused with FailedPrecondition for a different one while held);
 	// is_repairing=false releases it. Empty for legacy callers, which then only
 	// toggle the advisory display flag without lease enforcement.
-	DispatcherId  string `protobuf:"bytes,3,opt,name=dispatcher_id,json=dispatcherId,proto3" json:"dispatcher_id,omitempty"`
+	DispatcherId string `protobuf:"bytes,3,opt,name=dispatcher_id,json=dispatcherId,proto3" json:"dispatcher_id,omitempty"`
+	// When true, marks the session as queued behind the host repair concurrency
+	// cap without taking a lease, setting display_is_repairing, or releasing any
+	// held lease. Repeated calls refresh the queued mark's TTL while keeping the
+	// original queued timestamp.
+	IsQueued      bool `protobuf:"varint,4,opt,name=is_queued,json=isQueued,proto3" json:"is_queued,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -751,6 +756,13 @@ func (x *SetRepairStatusRequest) GetDispatcherId() string {
 		return x.DispatcherId
 	}
 	return ""
+}
+
+func (x *SetRepairStatusRequest) GetIsQueued() bool {
+	if x != nil {
+		return x.IsQueued
+	}
+	return false
 }
 
 type SetRepairStatusResponse struct {
@@ -1963,12 +1975,13 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x05event\x18\x02 \x01(\x0e2\x1a.bossanova.v1.SessionEventR\x05event\x12%\n" +
 	"\x0eblocked_reason\x18\x03 \x01(\tR\rblockedReason\"7\n" +
 	"\x18FireSessionEventResponse\x12\x1b\n" +
-	"\tnew_state\x18\x01 \x01(\tR\bnewState\"\x7f\n" +
+	"\tnew_state\x18\x01 \x01(\tR\bnewState\"\x9c\x01\n" +
 	"\x16SetRepairStatusRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12!\n" +
 	"\fis_repairing\x18\x02 \x01(\bR\visRepairing\x12#\n" +
-	"\rdispatcher_id\x18\x03 \x01(\tR\fdispatcherId\"\x19\n" +
+	"\rdispatcher_id\x18\x03 \x01(\tR\fdispatcherId\x12\x1b\n" +
+	"\tis_queued\x18\x04 \x01(\bR\bisQueued\"\x19\n" +
 	"\x17SetRepairStatusResponse\"Q\n" +
 	"\x18StartAgentRunHostRequest\x12\x1d\n" +
 	"\n" +

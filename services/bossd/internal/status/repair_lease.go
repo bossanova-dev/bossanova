@@ -83,11 +83,14 @@ type repairStall struct {
 // (repair_active true ⇔ lease held), and the recorded stall is surfaced purely
 // as transport metadata (Session.repair_stalled_at + the blocked reason).
 type RepairLeaseManager struct {
-	mu     sync.Mutex
-	leases map[string]repairLease
-	stalls map[string]repairStall
-	ttl    time.Duration
-	now    func() time.Time
+	mu            sync.Mutex
+	leases        map[string]repairLease
+	stalls        map[string]repairStall
+	queued        map[string]repairQueueEntry
+	queueTTLFn    func() time.Duration
+	onQueueChange func(sessionID string)
+	ttl           time.Duration
+	now           func() time.Time
 }
 
 // NewRepairLeaseManager returns a manager with the default TTL and clock.
@@ -95,6 +98,7 @@ func NewRepairLeaseManager() *RepairLeaseManager {
 	return &RepairLeaseManager{
 		leases: make(map[string]repairLease),
 		stalls: make(map[string]repairStall),
+		queued: make(map[string]repairQueueEntry),
 		ttl:    DefaultRepairLeaseTTL,
 		now:    time.Now,
 	}
@@ -135,10 +139,10 @@ func (m *RepairLeaseManager) Acquire(sessionID, holder string) error {
 		return nil
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	now := m.now()
 	cur, held := m.leases[sessionID]
 	if held && !m.expired(cur, now) && cur.holder != holder {
+		m.mu.Unlock()
 		return ErrRepairLeaseHeld
 	}
 	next := repairLease{holder: holder, expiresAt: now.Add(m.ttl), progressAt: now}
@@ -150,6 +154,13 @@ func (m *RepairLeaseManager) Acquire(sessionID, holder string) error {
 	}
 	m.leases[sessionID] = next
 	delete(m.stalls, sessionID)
+	_, wasQueued := m.queued[sessionID]
+	delete(m.queued, sessionID)
+	onChange := m.onQueueChange
+	m.mu.Unlock()
+	if wasQueued && onChange != nil {
+		onChange(sessionID)
+	}
 	return nil
 }
 
@@ -161,9 +172,15 @@ func (m *RepairLeaseManager) Release(sessionID, holder string) {
 		return
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if cur, ok := m.leases[sessionID]; ok && cur.holder == holder {
 		delete(m.leases, sessionID)
+	}
+	_, wasQueued := m.queued[sessionID]
+	delete(m.queued, sessionID)
+	onChange := m.onQueueChange
+	m.mu.Unlock()
+	if wasQueued && onChange != nil {
+		onChange(sessionID)
 	}
 }
 
@@ -309,6 +326,12 @@ func (m *RepairLeaseManager) HydrateSession(p *pb.Session, sessionID, headSHA st
 	if at, ok := m.StalledAt(sessionID); ok {
 		p.RepairStalledAt = timestamppb.New(at)
 		p.LastRepairBlockedReason = m.StallReason(sessionID)
+	}
+	p.RepairQueuedAt = nil
+	if !p.RepairActive {
+		if at, ok := m.QueuedSince(sessionID); ok {
+			p.RepairQueuedAt = timestamppb.New(at)
+		}
 	}
 }
 

@@ -224,8 +224,32 @@ func checkMethod(parent context.Context, r Runner, e Env, row contract) []Violat
 		out = append(out, modelListViolations(row.name, v.GetModels())...)
 	case *v1.ReadQuestionMenuResponse, *v1.PlanQuestionAnswerResponse:
 		out = append(out, questionMenuViolations(row.name, v)...)
+	case *v1.CheckLoginResponse:
+		out = append(out, checkLoginViolations(row.name, v)...)
 	}
 	return out
+}
+
+func checkLoginViolations(method string, v *v1.CheckLoginResponse) []Violation {
+	var problem string
+	switch v.GetStatus() {
+	case v1.AgentLoginStatus_AGENT_LOGIN_STATUS_UNSPECIFIED:
+		problem = "status must not be UNSPECIFIED"
+	case v1.AgentLoginStatus_AGENT_LOGIN_STATUS_LOGGED_OUT:
+		if v.GetRemedy() == "" {
+			problem = "LOGGED_OUT status must carry a non-empty remedy"
+		}
+	case v1.AgentLoginStatus_AGENT_LOGIN_STATUS_UNKNOWN, v1.AgentLoginStatus_AGENT_LOGIN_STATUS_LOGGED_IN:
+		if v.GetRemedy() != "" {
+			problem = "non-LOGGED_OUT status must carry an empty remedy"
+		}
+	default:
+		problem = "status is not a recognized AgentLoginStatus"
+	}
+	if problem == "" {
+		return nil
+	}
+	return []Violation{{Method: method, Problem: problem}}
 }
 
 // interactiveCommandViolations checks both the baseline BuildInteractiveCommand

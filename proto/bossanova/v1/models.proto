@@ -755,6 +755,17 @@ message Session {
   // No dated API bump: additive output field older clients ignore. See
   // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
   string policy_ref = 110;
+  // When this session was first deferred behind the host repair concurrency
+  // cap, while the repair plugin is still refreshing its queued mark and no
+  // repair lease is active. Absent when not queued or once a repair lease is
+  // held, released, or the mark lapses past its TTL without refresh.
+  //
+  // Transport-only: hydrated server-side from the in-memory RepairLeaseManager
+  // and NEVER persisted, matching repair_active (53) and repair_stalled_at (64).
+  // No dated API bump: additive optional output field older clients ignore
+  // without changing existing behavior. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  optional google.protobuf.Timestamp repair_queued_at = 111;
 }
 
 // ProofPageProblem is why verify could not publish a PR head's review page.

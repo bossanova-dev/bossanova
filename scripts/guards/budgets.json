@@ -1,7 +1,7 @@
 {
   "agents-index-size": {
     "subjects": {
-      "AGENTS.md": 24945
+      "AGENTS.md": 25025
     }
   },
   "go-cognitive-complexity": {
@@ -33,7 +33,6 @@
       "services/boss/api/cli/daemon:Group.runDaemonRestart": 35,
       "services/boss/api/cli/daemon:Group.runDaemonStop": 35,
       "services/boss/api/cli/diagnostics:writeLiveRecords": 47,
-      "services/boss/api/cli/settings:runConfigInit": 42,
       "services/boss/api/cli/skills:Group.maybeInstallSkills": 40,
       "services/boss/api/cli/skills:Group.runInit": 51,
       "services/boss/api/cli/skills:Group.runSkillCheck": 41,
@@ -84,7 +83,6 @@
       "services/bossd/api/daemon:Server.mergeSession": 86,
       "services/bossd/api/daemon:assembleTimeline": 50,
       "services/bossd/api/daemon:spawnChatTmux": 42,
-      "services/bossd/api/plugin:HostServiceServer.ListSessions": 75,
       "services/bossd/api/plugin:HostServiceServer.StartChatRun": 53,
       "services/bossd/api/plugin:tallyAgentLog": 33,
       "services/bossd/api/proxy:ProxyServer.handleProxy": 56,
@@ -165,11 +163,9 @@
       "lib/bossalib/displaystatus/compute.go": 1124,
       "lib/bossalib/kit/config/config.go": 1561,
       "plugins/bossd-plugin-codex/transcript.go": 1147,
-      "plugins/bossd-plugin-repair/server.go": 1084,
       "services/boss/api/cli/daemon/daemon_doctor.go": 2288,
       "services/boss/api/cli/session/session.go": 1450,
       "services/boss/api/cli/skills/init.go": 1196,
-      "services/boss/api/cli/skills/init_cron.go": 1027,
       "services/boss/api/tui/attach/attach.go": 1112,
       "services/boss/api/tui/repos/repo_add.go": 1140,
       "services/boss/api/tui/repos/repo_settings.go": 1595,
@@ -280,7 +276,7 @@
       "skills-toolbox/skill-config.mjs": 3815,
       "skills-toolbox/skill-extensions.mjs": 1031,
       "skills-toolbox/tracker/cli.mjs": 1066,
-      "skills-toolbox/verify/verify-gate.mjs": 4596,
+      "skills-toolbox/verify/verify-gate.mjs": 4606,
       "skills-toolbox/verify/verify-route.mjs": 1192
     }
   },

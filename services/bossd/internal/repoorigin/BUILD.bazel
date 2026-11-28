@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "repoorigin",
+    srcs = ["refresh.go"],
+    importpath = "github.com/recurser/bossd/internal/repoorigin",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/kit/vcs",
+        "//services/bossd/internal/domain",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "repoorigin_test",
+    srcs = ["refresh_test.go"],
+    embed = [":repoorigin"],
+    deps = [
+        "//services/bossd/internal/adapter/git",
+        "//services/bossd/internal/domain",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

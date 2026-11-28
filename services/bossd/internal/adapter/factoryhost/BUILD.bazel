@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "factoryhost",
+    srcs = ["host.go"],
+    importpath = "github.com/recurser/bossd/internal/adapter/factoryhost",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = ["//lib/bossalib/contract/plugin/skillinstall"],
+)
+
+go_test(
+    name = "factoryhost_test",
+    srcs = ["host_test.go"],
+    embed = [":factoryhost"],
+)

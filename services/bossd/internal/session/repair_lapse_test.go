@@ -13,10 +13,19 @@ import (
 	"github.com/recurser/bossalib/models"
 )
 
-// stubRepairLease is a RepairActivity whose live leases are a fixed set.
-type stubRepairLease map[string]bool
+// stubRepairLease is a RepairActivity whose live leases and queued sessions are
+// fixed sets.
+type stubRepairLease struct {
+	active map[string]bool
+	queued map[string]time.Time
+}
 
-func (s stubRepairLease) Active(sessionID string) bool { return s[sessionID] }
+func (s stubRepairLease) Active(sessionID string) bool { return s.active[sessionID] }
+
+func (s stubRepairLease) QueuedSince(sessionID string) (time.Time, bool) {
+	at, ok := s.queued[sessionID]
+	return at, ok
+}
 
 func TestRepairLapsed(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
@@ -29,7 +38,9 @@ func TestRepairLapsed(t *testing.T) {
 		want     bool
 	}{
 		{"not fixing_checks", machine.AwaitingChecks, at(time.Hour), stubRepairLease{}, false},
-		{"lease live", machine.FixingChecks, at(time.Hour), stubRepairLease{"sess-1": true}, false},
+		{"lease live", machine.FixingChecks, at(time.Hour), stubRepairLease{active: map[string]bool{"sess-1": true}}, false},
+		{"queued past grace", machine.FixingChecks, at(time.Hour), stubRepairLease{queued: map[string]time.Time{"sess-1": now.Add(-10 * time.Minute)}}, false},
+		{"queued unknown entry time", machine.FixingChecks, nil, stubRepairLease{queued: map[string]time.Time{"sess-1": now}}, false},
 		{"inside grace", machine.FixingChecks, at(RepairLapseGrace - time.Second), stubRepairLease{}, false},
 		{"exactly at grace", machine.FixingChecks, at(RepairLapseGrace), stubRepairLease{}, true},
 		{"past grace", machine.FixingChecks, at(time.Hour), stubRepairLease{}, true},
@@ -166,7 +177,7 @@ func TestPollerHoldsFixingChecksWhileRepairLive_Sessions_AC216202(t *testing.T) 
 		"green":    func(f *lapseFixture) { f.checks(vcs.CheckConclusionSuccess) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := newLapseFixture(t, machine.FixingChecks, stubRepairLease{"sess-1": true})
+			f := newLapseFixture(t, machine.FixingChecks, stubRepairLease{active: map[string]bool{"sess-1": true}})
 			setup(f)
 			if evs := f.poll(t); len(evs) != 0 {
 				t.Fatalf("emitted %T with a live repair lease, want nothing", evs[0].Event)
@@ -213,7 +224,7 @@ func TestDispatcherRejectsWhileRepairLive_Sessions_AC216202(t *testing.T) {
 		"green":    vcs.ChecksPassed{PRID: 42, HeadSHA: "sha-b"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := newLapseFixture(t, machine.FixingChecks, stubRepairLease{"sess-1": true})
+			f := newLapseFixture(t, machine.FixingChecks, stubRepairLease{active: map[string]bool{"sess-1": true}})
 			f.session().AttemptCount = 2
 			if err := f.disp.dispatch(context.Background(), Event{SessionID: "sess-1", Event: ev}); err == nil {
 				t.Fatal("dispatch with a live repair lease: want a rejected transition, got nil")
@@ -223,6 +234,49 @@ func TestDispatcherRejectsWhileRepairLive_Sessions_AC216202(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPollerAndDispatcherHoldFixingChecksWhileRepairQueued(t *testing.T) {
+	queuedAt := time.Now()
+	t.Run("poller holds queued session past grace", func(t *testing.T) {
+		for name, setup := range map[string]func(*lapseFixture){
+			"conflict": func(f *lapseFixture) { f.conflicted() },
+			"red":      func(f *lapseFixture) { f.checks(vcs.CheckConclusionFailure) },
+			"green":    func(f *lapseFixture) { f.checks(vcs.CheckConclusionSuccess) },
+		} {
+			t.Run(name, func(t *testing.T) {
+				lease := stubRepairLease{queued: map[string]time.Time{"sess-1": queuedAt}}
+				f := newLapseFixture(t, machine.FixingChecks, lease)
+				setup(f)
+				if evs := f.poll(t); len(evs) != 0 {
+					t.Fatalf("emitted %T while queued past grace, want nothing", evs[0].Event)
+				}
+				delete(lease.queued, "sess-1")
+				if evs := f.poll(t); len(evs) != 1 {
+					t.Fatalf("after queue cleared, emitted %d events, want 1", len(evs))
+				}
+			})
+		}
+	})
+	t.Run("dispatcher rejects release while queued past grace", func(t *testing.T) {
+		for name, ev := range map[string]vcs.Event{
+			"conflict": vcs.ConflictDetected{PRID: 42, HeadSHA: "sha-b"},
+			"red":      vcs.ChecksFailed{PRID: 42, HeadSHA: "sha-b"},
+			"green":    vcs.ChecksPassed{PRID: 42, HeadSHA: "sha-b"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				lease := stubRepairLease{queued: map[string]time.Time{"sess-1": queuedAt}}
+				f := newLapseFixture(t, machine.FixingChecks, lease)
+				f.session().AttemptCount = 2
+				if err := f.disp.dispatch(context.Background(), Event{SessionID: "sess-1", Event: ev}); err == nil {
+					t.Fatal("dispatch while queued past grace: want rejected transition, got nil")
+				}
+				if sess := f.session(); sess.State != machine.FixingChecks || sess.AttemptCount != 2 {
+					t.Fatalf("state = %v attempts = %d, want FixingChecks with 2", sess.State, sess.AttemptCount)
+				}
+			})
+		}
+	})
 }
 
 // TestDeclinedRepairReleasesThenReenters is the #3795 regression: a conflict

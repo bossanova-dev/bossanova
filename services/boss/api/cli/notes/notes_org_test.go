@@ -292,7 +292,7 @@ func (emptyTokenStore) Delete() error               { return nil }
 // actionable error naming `boss login` instead of an opaque RPC failure.
 func TestNotesOrganizationNotLoggedInIsClear(t *testing.T) {
 	mgr := auth.NewManager(emptyTokenStore{}, auth.Config{})
-	_, err := orgNotesRemote(context.Background(), mgr, "http://127.0.0.1:0")
+	_, err := orgNotesRemote(context.Background(), mgr, "https://orchestrator.bossanova.dev")
 	if !errors.Is(err, ErrNotLoggedIn) {
 		t.Fatalf("err = %v, want ErrNotLoggedIn", err)
 	}

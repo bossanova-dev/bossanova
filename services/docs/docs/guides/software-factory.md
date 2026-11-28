@@ -247,16 +247,27 @@ or uses other state or label names, set them in `.boss-skills.json` as
 
 ### Add the stage jobs
 
-Newer boss releases ship a `boss init` that asks a few questions and creates the
-plan, build, verify and retro jobs for you; the
-[in-repo pipeline guide](https://github.com/bossanova-dev/bossanova/blob/main/docs/skills/factory.md#set-it-up-with-boss-init)
-walks through it. If `boss init --help` does not mention cron jobs, your release
-predates it, so add the jobs by hand.
+Registering a trusted repository with bossd (through `boss repo add` with trust enabled,
+`boss init --register --trusted`, or a trusted clone-and-register) automatically seeds
+enabled `factory-plan`, `factory-build` and `factory-verify` jobs marked `boss-defaults`.
+Untrusted repositories skip automatic seeding so repository-controlled configuration and
+scripts never run without explicit trust. `factory-retro` (and `factory-release`)
+stays opt-in. If a stage's gate preflight fails in bossd's environment, bossd creates
+that job disabled and records why in the daemon log.
 
-These commands create one disabled job per stage, so you inspect each before it
-runs unattended. Leave out the release line unless your repository has a release
-extension. The retro and release skills are newer than some boss releases, so add
-their lines only if `boss skills install` created `boss-retro` and `boss-release`.
+Run `boss cron disable <id>` to turn a seeded job off. Running `boss init --cron`
+re-checks the stages and reports what already matches, what failed preflight, or what
+is missing, without duplicating stage jobs or re-enabling a disabled job; the
+[in-repo pipeline guide](https://github.com/bossanova-dev/bossanova/blob/main/docs/skills/factory.md#set-it-up-with-boss-init)
+walks through `boss init`. Passing PRs still park for a person: `can_auto_merge` stays
+off by default (see [Verify merges nothing until you opt in](#verify-merges-nothing-until-you-opt-in)).
+
+For repositories registered before automatic seeding, or to add opt-in `factory-retro`
+and `factory-release` jobs by hand, these commands create one disabled job per stage so
+you inspect each before it runs unattended. Leave out the release line unless your
+repository has a release extension. The retro and release skills are newer than some
+boss releases, so add their lines only if `boss skills install` created `boss-retro`
+and `boss-release`.
 
 ```sh
 REPO_ID="your-repository-id"
@@ -306,8 +317,9 @@ Add `agent-plan` to a Backlog ticket to start the pipeline.
 
 ### Verify merges nothing until you opt in
 
-Verify merges nothing by default. It parks every passing PR for approval through
-`boss pr approve <pr>` or the TUI's `[m]erge`. A fresh `boss init` writes no
+Verify merges nothing by default: `can_auto_merge` stays off even when repository
+registration seeds the stage jobs, and verify parks every passing PR for approval
+through `boss pr approve <pr>` or the TUI's `[m]erge`. A fresh `boss init` writes no
 `verifyDefaults` block. To let verify auto-merge, add `verifyDefaults.merge.auto`
 rules, for example `"merge": { "auto": [{ "level": "high" }] }` inside
 `verifyDefaults`, and merge that config change to the base branch.

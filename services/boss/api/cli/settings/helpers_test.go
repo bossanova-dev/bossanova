@@ -5,11 +5,23 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/telemetry"
 )
+
+// setupTestConfigEnv points config.Path() at an isolated temp settings file via
+// BOSS_SETTINGS_PATH so the test can never touch the developer's real
+// settings.json. It uses t.Setenv, so the env is restored automatically; the
+// returned cleanup is a no-op kept for call-site compatibility.
+func setupTestConfigEnv(t *testing.T) (settingsPath string, cleanup func()) {
+	t.Helper()
+	settingsPath = filepath.Join(t.TempDir(), "settings.json")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	return settingsPath, func() {}
+}
 
 func newTestGroup() *Group {
 	return New(Options{

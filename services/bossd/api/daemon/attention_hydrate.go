@@ -513,7 +513,7 @@ func (s *Server) hydrateRepairAttention(ctx context.Context, p *pb.Session, d at
 	// conflict once it takes a live lease, not merely because repair is enabled.
 	// Until then the existing conflict FIX is truthful, rather than promising
 	// a rebase that may never run. A new head is eligible again immediately.
-	if !s.repairLease.Active(d.row.ID) && repairAttemptFinishedOn(d.row, d.display) {
+	if !s.repairLease.Active(d.row.ID) && !s.repairQueued(d.row.ID) && repairAttemptFinishedOn(d.row, d.display) {
 		in.Fix = &attention.FixFact{AlertKey: "merge-conflict", Sentence: "Merge conflict", Since: in.StateSince}
 		return
 	}
@@ -525,14 +525,25 @@ func (s *Server) hydrateRepairAttention(ctx context.Context, p *pb.Session, d at
 // nothing arms another attempt.
 const repairExhaustedAttempts = 5
 
-// repairOwned reports whether automatic repair runs on the session's PR, or is
-// armed to (repairArmed): a live repair lease or a repair the display reports.
+// repairOwned reports whether automatic repair runs on the session's PR, is
+// queued waiting for a host repair slot, or is armed to (repairArmed): a live
+// repair lease, a live queued mark, or a repair the display reports.
 // attention.Compute moves a fault repair owns from FIX to in progress.
 func (s *Server) repairOwned(p *pb.Session, d attentionDeps) bool {
-	if s.repairLease.Active(d.row.ID) || p.GetDisplayIsRepairing() || d.display != nil && d.display.IsRepairing {
+	if s.repairLease.Active(d.row.ID) || s.repairQueued(d.row.ID) || p.GetDisplayIsRepairing() || d.display != nil && d.display.IsRepairing {
 		return true
 	}
 	return s.repairArmed(d)
+}
+
+// No dated apiversion bump: Session.repair_queued_at is an additive optional
+// transport field, and suppressing false "no repair is running" / "Merge
+// conflict" FIX rows while queued fixes a defect for version-skewed TUI and
+// web clients rather than changing an older contract. See
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+func (s *Server) repairQueued(sessionID string) bool {
+	_, queued := s.repairLease.QueuedSince(sessionID)
+	return queued
 }
 
 // repairArmed reports whether the repair plugin will take the PR on its next

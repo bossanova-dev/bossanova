@@ -464,16 +464,68 @@ export function aggregateBlockerExtensions(
   return { verdict: 'pass', reason: 'verified', ...out }
 }
 
-// Splits shared-eligibility reasons into `{wait, partial}`: merge state, PR shape and head reasons
-// resolve by waiting (the CI reasons are judged separately, with `boss/*` excluded); boss-build's
-// PARTIAL marker is the PR itself saying it is not finished.
-export function splitEligibility(reasons) {
+// The park code of a head verify judged that GitHub blocks until a person approves the PR.
+export const APPROVAL_REQUIRED = 'approval-required'
+
+// The review decisions under which GitHub blocks a merge until a person approves.
+const PENDING_REVIEW_DECISIONS = ['REVIEW_REQUIRED', 'CHANGES_REQUESTED']
+
+/**
+ * Why a recorded approval cannot lift a park with these codes, or null. Only GitHub lifts
+ * `approval-required`, once its review decision reads APPROVED; a boss approval never stands in.
+ * @param {string[]} codes @param {string | undefined} reviewDecision
+ */
+export const githubApprovalRefusal = (codes, reviewDecision) =>
+  codes.includes(APPROVAL_REQUIRED) && normalized(reviewDecision) !== 'APPROVED'
+    ? APPROVAL_REQUIRED
+    : null
+
+/**
+ * Whether a BLOCKED head may be judged and parked for an approval instead of waiting. GitHub's
+ * BLOCKED names no cause, so it is read off the PR: the review decision says a required review is
+ * missing, and green, settled CI on the head (the classifier over statusCheckRollup, `boss/*`
+ * excluded) rules out a required check. A block reviews cannot explain (an approved or
+ * review-free PR) stays a wait. A rule the PR does not show, such as conversation resolution, can
+ * still hide behind a missing review; that only mislabels a park, because merge still waits for a
+ * clean merge state.
+ * @param {{reviewDecision?: string, ciGreen?: boolean}} facts
+ */
+export const approvalCanUnblock = ({ reviewDecision, ciGreen }) =>
+  ciGreen === true && PENDING_REVIEW_DECISIONS.includes(normalized(reviewDecision))
+
+// Merge-state reasons that only a merge needs cleared. Dirty is a conflict, judged as a blocker;
+// unknown may hide a conflict and draft is a draft, so both still wait.
+const MERGE_ONLY_REASONS = [
+  'merge-state-clean',
+  'merge-state-has_hooks',
+  'merge-state-unstable',
+  'merge-state-blocked',
+  'merge-state-behind',
+]
+
+// Splits shared-eligibility reasons into `{wait, partial, approvalRequired}`: merge state, PR shape
+// and head reasons resolve by waiting (the CI reasons are judged separately, with `boss/*`
+// excluded); boss-build's PARTIAL marker is the PR itself saying it is not finished. A BLOCKED head
+// an approval can unblock is judged and parked `approval-required` instead, and a run that never
+// merges (`mergeless`) waits on no merge-only reason.
+export function splitEligibility(reasons, { approvalOnly = false, mergeless = false } = {}) {
   const wait = []
   let partial = false
+  let approvalRequired = false
   for (const reason of reasons ?? []) {
     if (reason === 'partial-marker') partial = true
-    else if (!['ci-not-settled', 'ci-not-green-on-head', 'merge-state-dirty'].includes(reason))
-      wait.push(reason)
+    else if (['ci-not-settled', 'ci-not-green-on-head', 'merge-state-dirty'].includes(reason))
+      continue
+    else if (mergeless && MERGE_ONLY_REASONS.includes(reason)) continue
+    else if (reason === 'merge-state-blocked' && approvalOnly) approvalRequired = true
+    else wait.push(reason)
   }
-  return { wait, partial }
+  return { wait, partial, approvalRequired }
 }
+
+// The split for a judge's facts: `trial` sessions never merge.
+export const judgeEligibility = (f) =>
+  splitEligibility(f.eligibilityReasons, {
+    approvalOnly: approvalCanUnblock({ reviewDecision: f.reviewDecision, ciGreen: f.ci?.green }),
+    mergeless: f.trial === true,
+  })

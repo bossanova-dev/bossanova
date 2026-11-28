@@ -31,7 +31,10 @@ import (
 	"github.com/recurser/boss/api/tui/login"
 	daemon "github.com/recurser/boss/internal/daemonlife"
 	"github.com/recurser/boss/internal/preflight"
+	"github.com/recurser/bossalib/contract/cloud/cloudorigin"
 	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/safego"
+	zlog "github.com/rs/zerolog/log"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -84,15 +87,17 @@ func requireLocalDaemonTarget(cmd *cobra.Command) error {
 	return fmt.Errorf("boss daemon commands manage the local bossd and cannot target a remote (--host %s) daemon; run `ssh %s boss daemon ...` on that host instead", host, host)
 }
 
-// newRemoteClient creates a RemoteClient with a JWT from the keychain.
 func newRemoteClient(cmd *cobra.Command, baseURL string) (*cloudrpc.RemoteClient, error) {
 	mgr, err := settingscli.NewAuthManager(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("auth: %w (run 'boss login' first)", err)
 	}
 	ctx := context.Background()
-	token, err := mgr.AccessToken(ctx)
+	token, err := cliutil.CloudToken(ctx, mgr, baseURL)
 	if err != nil {
+		if errors.Is(err, cloudorigin.ErrUnknownOrchestrator) || errors.Is(err, cloudorigin.ErrEnvironmentMismatch) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("access token: %w (run 'boss login' first)", err)
 	}
 	c := cloudrpc.NewRemote(baseURL, token)
@@ -250,12 +255,15 @@ type agentPreflightClient interface {
 	ResolveContext(ctx context.Context, workingDir string) (*pb.ResolveContextResponse, error)
 	GetSession(ctx context.Context, id string, opts rpc.SessionReadOptions) (*pb.Session, error)
 	ListAgents(ctx context.Context) ([]rpc.AgentInfo, error)
+	CheckAgentLogins(ctx context.Context) ([]rpc.AgentLogin, error)
 }
 
 // checkAgentsResolvableForPreflight probes every enabled agent under a single
 // startup budget — see preflight.CheckAgentsResolvable, which runs them
 // concurrently precisely because this call blocks boss's first frame.
 var checkAgentsResolvableForPreflight = preflight.CheckAgentsResolvable
+
+var runPreflightScreen = home.RunPreflight
 
 func runAgentPreflights(ctx context.Context, cmd *cobra.Command, c agentPreflightClient, settings config.Settings, sessionID string) error {
 	// The probe runs `command -v <agent>` in a login shell *here*, against a
@@ -276,11 +284,56 @@ func runAgentPreflights(ctx context.Context, cmd *cobra.Command, c agentPrefligh
 	if err != nil {
 		return err
 	}
+	loginNames := enabledLoadedAgentNames(settings, loadedAgents, agentName)
 	agents := enabledAgentProviders(settings, loadedAgents, agentName)
-	if issue := checkAgentsResolvableForPreflight(settings.LoginShell, agents, worktree); issue != nil {
-		return home.RunPreflight(*issue)
+	waitLogins := startAgentLoginCheck(ctx, c, loginNames)
+	resolveIssue := checkAgentsResolvableForPreflight(settings.LoginShell, agents, worktree)
+	logins := waitLogins()
+	if resolveIssue != nil {
+		return runPreflightScreen(*resolveIssue)
+	}
+	if warning := loginWarningIssue(logins, loginNames); warning != nil {
+		return runPreflightScreen(*warning)
 	}
 	return nil
+}
+
+func startAgentLoginCheck(ctx context.Context, c agentPreflightClient, names []string) func() []rpc.AgentLogin {
+	if len(names) == 0 {
+		return func() []rpc.AgentLogin { return nil }
+	}
+	loginCtx, cancel := context.WithTimeout(ctx, preflight.AgentResolveTimeout)
+	var results []rpc.AgentLogin
+	var err error
+	done := safego.Go(zlog.Logger, func() {
+		results, err = c.CheckAgentLogins(loginCtx)
+	})
+	return func() []rpc.AgentLogin {
+		<-done
+		cancel()
+		if err != nil {
+			zlog.Debug().Err(err).Msg("agent login preflight check failed")
+			return nil
+		}
+		return results
+	}
+}
+
+func loginWarningIssue(results []rpc.AgentLogin, names []string) *preflight.Issue {
+	allowed := make(map[string]bool, len(names))
+	for _, name := range names {
+		allowed[name] = true
+	}
+	var loggedOut []preflight.LoggedOutAgent
+	for _, r := range results {
+		if r.LoggedOut && allowed[r.AgentName] {
+			loggedOut = append(loggedOut, preflight.LoggedOutAgent{
+				Agent:  r.AgentName,
+				Remedy: r.Remedy,
+			})
+		}
+	}
+	return preflight.AgentLoginWarning(loggedOut)
 }
 
 func needsLocalDaemonStartup(cmd *cobra.Command) bool {
@@ -339,26 +392,36 @@ func agentPreflightTarget(ctx context.Context, c agentPreflightClient, sessionID
 	return wd, sess.GetAgentName(), nil
 }
 
-func enabledAgentProviders(settings config.Settings, loadedAgents []rpc.AgentInfo, agentName string) []string {
-	agentProviders := make(map[string]bool, len(loadedAgents))
+func enabledLoadedAgentNames(settings config.Settings, loadedAgents []rpc.AgentInfo, agentName string) []string {
+	loaded := make(map[string]bool, len(loadedAgents))
 	for _, agent := range loadedAgents {
 		if agent.Name != "" {
-			agentProviders[agent.Name] = true
+			loaded[agent.Name] = true
 		}
 	}
 
-	agents := make([]string, 0, 2)
-	seen := map[string]bool{}
+	names := make([]string, 0, len(loaded))
+	seen := make(map[string]bool, len(loaded))
 	for _, plugin := range settings.Plugins {
 		if agentName != "" && plugin.Name != agentName {
 			continue
 		}
-		provider, cliBacked := ui.ProviderFor(plugin.Name)
-		if !plugin.Enabled || !agentProviders[plugin.Name] || !cliBacked || seen[plugin.Name] {
+		if !plugin.Enabled || !loaded[plugin.Name] || seen[plugin.Name] {
 			continue
 		}
-		agents = append(agents, provider.Command)
+		names = append(names, plugin.Name)
 		seen[plugin.Name] = true
+	}
+	return names
+}
+
+func enabledAgentProviders(settings config.Settings, loadedAgents []rpc.AgentInfo, agentName string) []string {
+	names := enabledLoadedAgentNames(settings, loadedAgents, agentName)
+	agents := make([]string, 0, len(names))
+	for _, name := range names {
+		if provider, cliBacked := ui.ProviderFor(name); cliBacked {
+			agents = append(agents, provider.Command)
+		}
 	}
 	return agents
 }

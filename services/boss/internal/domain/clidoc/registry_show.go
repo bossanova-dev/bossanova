@@ -13,8 +13,10 @@ const bossShowLong = "Shows one session's details, then its chats in the same ta
 	"`base_branch`, `worktree_path`, `account_id`, " +
 	"`account_label`, `display_status`, `display_label`, `last_check_state`, " +
 	"`pr_mergeable`, `merge_block`, `attention_status`, " +
-	"`archived_at`, `setup_error` and `last_repair` (an object, or " +
-	"`null` when the repair plugin has never run for this session). " +
+	"`archived_at`, `setup_error`, `last_repair` (an object, or " +
+	"`null` when the repair plugin has never run for this session), " +
+	"`repair_active` and `repair_queued_at` (RFC3339 timestamp when " +
+	"waiting for a repair slot, empty when absent). " +
 	"`repo_should_archive_sessions_after_merge` is a boolean, or `null` " +
 	"when repository hydration failed. " +
 	"`display_status` uses the same vocabulary as the TUI and `boss " +

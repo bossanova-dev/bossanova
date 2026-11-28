@@ -22,11 +22,13 @@ const defaultReportURL = "https://orchestrator.bossanova.dev"
 // NewReportClient builds a Connect client for the ReportBug RPC on the bosso
 // instance named by $BOSS_REPORT_URL, or defaultReportURL when unset.
 //
-// Auth is opportunistic: when mgr is non-nil and has a valid access token,
-// the token is attached as a Bearer header via the existing authInterceptor
-// so bosso can record the caller's WorkOS identity. Any auth failure (no
-// tokens, expired + unrefreshable, keyring decrypt error) falls back to an
-// anonymous request — ReportBug is unauthenticated by design.
+// Auth is opportunistic and scoped to known Bossanova Cloud orchestrators:
+// when mgr is non-nil and mgr.AccessTokenFor succeeds for baseURL, the token
+// is attached as a Bearer header via the existing authInterceptor so bosso
+// can record the caller's WorkOS identity. Other BOSS_REPORT_URL values and
+// any auth failure (no tokens, expired + unrefreshable, keyring decrypt
+// error, or environment mismatch) submit anonymously — ReportBug is
+// unauthenticated by design.
 func NewReportClient(ctx context.Context, mgr *auth.Manager) (bossanovav1connect.OrchestratorServiceClient, error) {
 	baseURL := os.Getenv("BOSS_REPORT_URL")
 	if baseURL == "" {
@@ -39,7 +41,7 @@ func NewReportClient(ctx context.Context, mgr *auth.Manager) (bossanovav1connect
 		connect.WithInterceptors(apiversion.ClientInterceptor(apiversion.DefaultRegistry().Current())),
 	}
 	if mgr != nil {
-		if token, err := mgr.AccessToken(ctx); err == nil && token != "" {
+		if token, err := mgr.AccessTokenFor(ctx, baseURL); err == nil && token != "" {
 			opts = append(opts, connect.WithInterceptors(newAuthInterceptor(token)))
 		}
 	}

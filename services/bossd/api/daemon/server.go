@@ -97,6 +97,7 @@ type Server struct {
 	factoryRepoChecker        *verifyjob.Checker
 	factoryHealthVersions     func(context.Context, string) (string, string, bool, error)
 	factorySkills             factorySkillsInstaller
+	stageCronHost             stageCronHost
 	resumeAttempts            resumeAttemptReader
 	// pendingTrackerMerges queues post-merge tracker writes for the worker;
 	// trackerMerges is what an operator merge leaves it besides the entry.
@@ -415,7 +416,9 @@ type Config struct {
 	FactoryRepoChecker    *verifyjob.Checker
 	FactoryHealthVersions func(context.Context, string) (string, string, bool, error)
 	FactorySkills         factorySkillsInstaller
-	ResumeAttempts        resumeAttemptReader
+	// StageCronHost probes bossd's host environment to seed default factory stage crons; pass a nil interface, never a typed nil pointer.
+	StageCronHost  stageCronHost
+	ResumeAttempts resumeAttemptReader
 	// PendingTrackerMerges queues post-merge tracker writes to retry. Optional.
 	PendingTrackerMerges pendingTrackerMergeStore
 	// GithubCallbacks persists one-shot GitHub callback registrations (BOS-467).
@@ -651,6 +654,7 @@ func New(cfg Config) *Server {
 		factoryRepoChecker:    cfg.FactoryRepoChecker,
 		factoryHealthVersions: cfg.FactoryHealthVersions,
 		factorySkills:         cfg.FactorySkills,
+		stageCronHost:         cfg.StageCronHost,
 		resumeAttempts:        cfg.ResumeAttempts,
 
 		pendingTrackerMerges: cfg.PendingTrackerMerges,

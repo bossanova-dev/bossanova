@@ -165,7 +165,7 @@ func newCronFixture(t *testing.T, loaded ...string) *cronFixture {
 func installStubStageGates(t *testing.T, root string) {
 	t.Helper()
 	for _, st := range factoryCronStages {
-		for _, rel := range []string{st.gatePath(), st.modulePath()} {
+		for _, rel := range []string{st.lib().GatePath(), st.lib().ModulePath()} {
 			p := filepath.Join(root, filepath.FromSlash(rel))
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				t.Fatal(err)
@@ -406,9 +406,6 @@ func TestInitCronNodeOnlyOnCallerPathUsesAbsolutePath(t *testing.T) {
 	}
 	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "not on the daemon's service PATH") {
 		t.Fatalf("warnings %v", res.Warnings)
-	}
-	if got := shellWord("/opt/my node/bin/node"); got != `'/opt/my node/bin/node'` {
-		t.Fatalf("unsafe path not quoted: %s", got)
 	}
 }
 
@@ -913,7 +910,7 @@ func TestFactoryCronResolver(t *testing.T) {
 		t.Fatalf("unknown stage: %v", err)
 	}
 
-	if err := os.Remove(filepath.Join(f.home, ".claude", "skills", filepath.FromSlash(build.gatePath()))); err != nil {
+	if err := os.Remove(filepath.Join(f.home, ".claude", "skills", filepath.FromSlash(build.lib().GatePath()))); err != nil {
 		t.Fatal(err)
 	}
 	r, err = NewFactoryCronResolver(context.Background(), f.c, f.configPath, f.env)
@@ -1114,7 +1111,7 @@ func TestFactoryCronResolverRetro(t *testing.T) {
 	}
 
 	retro := mustCronStage("retro")
-	if err := os.Remove(filepath.Join(f.home, ".claude", "skills", filepath.FromSlash(retro.gatePath()))); err != nil {
+	if err := os.Remove(filepath.Join(f.home, ".claude", "skills", filepath.FromSlash(retro.lib().GatePath()))); err != nil {
 		t.Fatal(err)
 	}
 	r, err = NewFactoryCronResolver(context.Background(), f.c, f.configPath, f.env)
@@ -1148,6 +1145,45 @@ func TestInitGitHubCronPreflight_BossInit_AC17(t *testing.T) {
 				} else if !present && !strings.Contains(res.Stages[i].PreflightFailure, "daemon_path_extra") {
 					t.Errorf("missing remedy: %+v", res.Stages[i])
 				}
+			}
+		})
+	}
+}
+
+func TestInitCronPreflightStopsOnUnusableSkillRoot(t *testing.T) {
+	cases := []struct {
+		name      string
+		skillRoot func(string) (string, error)
+		want      string
+	}{
+		{
+			name:      "unresolvable root",
+			skillRoot: func(string) (string, error) { return "", errors.New("no home") },
+			want:      "the agent's skill directory could not be resolved",
+		},
+		{
+			name:      "unquotable root",
+			skillRoot: func(string) (string, error) { return `/opt/bad"dir/skills`, nil },
+			want:      `cannot be quoted in a gate command`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCronFixture(t, "claude")
+			f.env.SkillRoot = tc.skillRoot
+			if err := os.Remove(f.configPath); err != nil {
+				t.Fatal(err)
+			}
+			r, err := NewFactoryCronResolver(context.Background(), f.c, f.configPath, f.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := r.Resolve("build", "claude")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.PreflightFailures) != 1 || !strings.Contains(got.PreflightFailures[0], tc.want) {
+				t.Fatalf("PreflightFailures = %q, want single %q", got.PreflightFailures, tc.want)
 			}
 		})
 	}

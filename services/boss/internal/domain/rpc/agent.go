@@ -80,3 +80,20 @@ func settingTypeFromProto(t pb.UserSettingType) SettingType {
 		return SettingTypeUnspecified
 	}
 }
+
+type AgentLogin struct {
+	AgentName string
+	LoggedOut bool
+	Remedy    string
+}
+
+func AgentLoginFromProto(p *pb.AgentLogin) AgentLogin {
+	if p == nil {
+		return AgentLogin{}
+	}
+	return AgentLogin{
+		AgentName: p.GetAgentName(),
+		LoggedOut: p.GetStatus() == pb.AgentLoginStatus_AGENT_LOGIN_STATUS_LOGGED_OUT,
+		Remedy:    p.GetRemedy(),
+	}
+}

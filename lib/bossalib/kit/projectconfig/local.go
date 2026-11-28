@@ -262,6 +262,9 @@ type localOp struct {
 	createCron *pb.CreateCronJobRequest
 	updateCron *pb.UpdateCronJobRequest
 	deleteCron string
+	// stage is the factory stage of a createCron op (empty for plain crons),
+	// used to adopt a DefaultsMarker job seeded during RegisterRepo.
+	stage string
 	// marker, when set, must come back on the echoed cron row.
 	marker string
 }

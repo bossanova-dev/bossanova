@@ -221,8 +221,21 @@ func TestMarker(t *testing.T) {
 	if _, ok := ParseMarker("other:my-project"); ok {
 		t.Fatal("foreign prefix parsed")
 	}
-	if IsMarker("") || IsMarker("other:my-project") {
-		t.Fatal("IsMarker accepted an empty or foreign marker")
+	if IsMarker("") || IsMarker("other:my-project") || IsMarker(DefaultsMarker) {
+		t.Fatal("IsMarker accepted an empty, foreign, or defaults marker")
+	}
+	if _, ok := ParseMarker(DefaultsMarker); ok {
+		t.Fatal("ParseMarker accepted DefaultsMarker")
+	}
+	for _, good := range []string{"", DefaultsMarker, "boss-project:x", m} {
+		if !ValidCronManagedBy(good) {
+			t.Fatalf("ValidCronManagedBy(%q) = false, want true", good)
+		}
+	}
+	for _, bad := range []string{"boss-defaults:x", "abc", "boss-project:-a", "boss-project:", "other:my-project"} {
+		if ValidCronManagedBy(bad) {
+			t.Fatalf("ValidCronManagedBy(%q) = true, want false", bad)
+		}
 	}
 }
 

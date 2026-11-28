@@ -91,6 +91,31 @@ func TestReconcile(t *testing.T) {
 			want:     []Change{{Resource: ResourceCron, Identity: "factory-build", Action: ActionAdopt, Fields: schedDiff}},
 		},
 		{
+			name:     "boss-defaults row matched by key is adopted",
+			desired:  []row{desired("factory-verify", "/boss-verify", "*/5 * * * *")},
+			observed: []row{observed("factory-verify", "/boss-verify", DefaultsMarker, "0 * * * *")},
+			want:     []Change{{Resource: ResourceCron, Identity: "factory-verify", Action: ActionAdopt, Fields: schedDiff}},
+		},
+		{
+			name:     "boss-defaults row matched by key with no differences is still adopted",
+			desired:  []row{desired("factory-verify", "/boss-verify", "0 * * * *")},
+			observed: []row{observed("factory-verify", "/boss-verify", DefaultsMarker, "0 * * * *")},
+			want:     []Change{{Resource: ResourceCron, Identity: "factory-verify", Action: ActionAdopt}},
+		},
+		{
+			name:     "boss-defaults row matched by stage fallback is adopted",
+			desired:  []row{desired("verify-stage", "/boss-verify", "*/5 * * * *")},
+			observed: []row{observed("factory-verify", "/boss-verify", DefaultsMarker, "0 * * * *")},
+			want:     []Change{{Resource: ResourceCron, Identity: "verify-stage", Action: ActionAdopt, Fields: schedDiff}},
+		},
+		{
+			name:     "unmatched boss-defaults row produces no change even under prune",
+			observed: []row{observed("factory-plan", "/boss-plan", DefaultsMarker, "0 * * * *")},
+			desired:  []row{},
+			prune:    true,
+			want:     nil,
+		},
+		{
 			name:    "fallback is not consulted when the name matched",
 			desired: []row{desired("factory-build", "/boss-build", "0 * * * *")},
 			observed: []row{

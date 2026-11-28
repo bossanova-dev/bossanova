@@ -47,6 +47,8 @@ func TestParkAsksGolden(t *testing.T) {
 		parkAskRow{Codes: []string{"human-review:ui"}, Label: "low: UI +9223372036854775808", Asks: []string{"UI", "Second area"}},
 		parkAskRow{Codes: []string{"always-human-path", "human-review:ui"}, Label: "low: Persistent write to shared refe…", Asks: []string{"config:shared-record"}},
 		parkAskRow{Codes: []string{"human-review:ui"}, Label: "low: UI, Record, Third +3", Asks: []string{"UI", "Record", "Third", "Fourth"}},
+		parkAskRow{Codes: []string{"always-human-path", "approval-required", "human-merge"}, Label: "the verify judge (cannot grade itself)", Head: "abc123456789"},
+		parkAskRow{Codes: []string{"human-review:ui", "human-review:database", "approval-required"}, EvidenceURL: "https://example.com/evidence.mp4", Head: "abc123456789"},
 	)
 	for i := range rows {
 		r := &rows[i]

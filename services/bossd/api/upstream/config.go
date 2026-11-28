@@ -2,8 +2,10 @@ package upstream
 
 import (
 	"context"
+	"fmt"
 	"os"
 
+	"github.com/recurser/bossalib/contract/cloud/cloudorigin"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -41,8 +43,7 @@ type Config struct {
 
 // defaultOrchestratorURL is the production bosso that bossd syncs with
 // when BOSSD_ORCHESTRATOR_URL is unset. Set the env var to an empty string
-// to force local-only mode (dev), or to a different URL (staging,
-// self-host).
+// to force local-only mode (dev), or to the Bossanova Cloud staging URL.
 const defaultOrchestratorURL = "https://orchestrator.bossanova.dev"
 
 // ConfigFromEnv reads upstream configuration from environment variables.
@@ -54,8 +55,9 @@ const defaultOrchestratorURL = "https://orchestrator.bossanova.dev"
 // Keychain fallback for BOSSD_USER_JWT is NOT performed here — the
 // StreamClient's TokenProvider owns keychain reads / refreshes so the
 // startup path and the long-lived refresh loop share a single source of
-// truth. cmd/main.go pulls the initial token via
-// NewKeychainTokenProvider().Token() when BOSSD_USER_JWT is empty.
+// truth. The provider only supplies the stored Bossanova Cloud login for
+// Bossanova Cloud production and staging origins; any other URL requires
+// BOSSD_USER_JWT (checked via CredentialRefusal).
 func ConfigFromEnv() *Config {
 	url, set := os.LookupEnv("BOSSD_ORCHESTRATOR_URL")
 	if !set {
@@ -77,4 +79,17 @@ func ConfigFromEnv() *Config {
 		Hostname:        hostname,
 		UserJWT:         os.Getenv("BOSSD_USER_JWT"),
 	}
+}
+
+// CredentialRefusal reports whether this upstream configuration points at an
+// unknown orchestrator without an explicit BOSSD_USER_JWT. The stored
+// Bossanova Cloud login is never sent to servers outside Bossanova Cloud.
+func (c *Config) CredentialRefusal() error {
+	if c == nil || c.UserJWT != "" {
+		return nil
+	}
+	if _, err := cloudorigin.CheckOrchestrator(c.OrchestratorURL); err != nil {
+		return fmt.Errorf("%w Set BOSSD_USER_JWT to a credential for that server, or unset BOSSD_ORCHESTRATOR_URL", err)
+	}
+	return nil
 }

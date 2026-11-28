@@ -190,6 +190,12 @@ func (a *App) SetAttachSession(sessionID, resumeID string) {
 	a.attach.SetTelemetry(a.telemetry)
 }
 
+// SetInitialRepoPath seeds the add-repository wizard with a checkout path to
+// validate immediately on Init. Must be called after SetInitialView(ui.ViewRepoAdd).
+func (a *App) SetInitialRepoPath(path string) {
+	a.repoAdd.SetInitialPath(path)
+}
+
 // SetInitialAgent overrides the agent for new sessions created via the
 // NewSession view. Empty means "use Settings.DefaultAgent" (the daemon
 // falls back automatically).

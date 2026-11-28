@@ -39,12 +39,12 @@ type ReconcileInput struct {
 // row, in order: no candidate is create; several, or one live row that two
 // desired rows reach through a shared fallback key, are conflict/ambiguous for
 // each of them, so no live row is claimed twice; one with this project's
-// marker is update (with field diffs) or unchanged; one unmarked is adopt
-// (carrying field diffs); one with another marker is
+// marker is update (with field diffs) or unchanged; one unmarked or marked
+// DefaultsMarker is adopt (carrying field diffs); one with another marker is
 // conflict/managed-by-other. Then each observed row with this project's
 // marker that no desired row matched is disable (unchanged when already
-// disabled), or delete under Prune. Unmarked and foreign rows absent from the
-// file never appear.
+// disabled), or delete under Prune. Unmarked, DefaultsMarker and foreign rows
+// absent from the file never appear.
 //
 // Changes carry Resource, Identity, Action, Reason and Fields; callers fill
 // Daemon, Detail and NeedsConfirmation. Reconcile does no I/O.
@@ -100,7 +100,7 @@ func Reconcile(in ReconcileInput) []Change {
 				if change.Fields != nil {
 					change.Action = ActionUpdate
 				}
-			case "":
+			case "", DefaultsMarker:
 				change.Action = ActionAdopt
 				change.Fields = in.diff(di, oi)
 			default:

@@ -34,7 +34,8 @@ func (w *daemonWiring) wirePlugins() error {
 	w.hostService = plugindoor.NewHostServiceServer(plugindoor.Config{
 		Provider: w.ghProvider, Repos: w.repos, Sessions: w.sessions, Chats: w.agentChats,
 		DisplayTracker: w.displayTracker, ChatTracker: w.chatStatusTracker, AgentRuns: w.agentRuns,
-		RepairLease: w.repairLease, PanePIDResolver: w.tmuxClient.PanePID, ProofEnv: w.proofEnv,
+		RepairLease: w.repairLease, PanePIDResolver: w.tmuxClient.PanePID,
+		LivePaneChecker: w.hasLiveTmuxPane, ProofEnv: w.proofEnv,
 		EnvOverlay: dotenv.OverlayWithRepo,
 	})
 	w.pluginHost = plugin.New(w.pluginBus, w.hostService, log.Logger)
@@ -242,4 +243,12 @@ func (w *daemonWiring) wirePlugins() error {
 	}
 
 	return nil
+}
+
+func (w *daemonWiring) hasLiveTmuxPane(ctx context.Context, tmuxSessionName string) bool {
+	if w.tmuxClient == nil || !w.tmuxClient.HasSession(ctx, tmuxSessionName) {
+		return false
+	}
+	dead, err := w.tmuxClient.PaneDead(ctx, tmuxSessionName)
+	return err == nil && !dead
 }

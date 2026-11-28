@@ -20,8 +20,13 @@ func newRepoGroup() *repocli.Group {
 			return repocli.DaemonProfile{SettingsPath: p.SettingsPath, AppDataDir: p.AppDataDir, SocketPath: p.SocketPath}, err
 		},
 		CloudRemote: settingscli.NewCloudRemote,
-		LaunchRepoAdd: func(cmd *cobra.Command) error {
-			return launchTUI(cmd, func(app *tui.App) { app.SetInitialView(ui.ViewRepoAdd) })
+		LaunchRepoAdd: func(cmd *cobra.Command, path string) error {
+			return launchTUI(cmd, func(app *tui.App) {
+				app.SetInitialView(ui.ViewRepoAdd)
+				if path != "" {
+					app.SetInitialRepoPath(path)
+				}
+			})
 		},
 	})
 }

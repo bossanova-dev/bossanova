@@ -7,6 +7,7 @@ import (
 	"github.com/recurser/bossd/internal/adapter/setupscript"
 
 	"github.com/recurser/bossd/internal/adapter/dotenv"
+	"github.com/recurser/bossd/internal/adapter/factoryhost"
 	"github.com/recurser/bossd/internal/adapter/factoryskills"
 	"github.com/recurser/bossd/internal/adapter/factoryversions"
 	"github.com/recurser/bossd/internal/adapter/verifybridge"
@@ -86,6 +87,7 @@ func (w *daemonWiring) wireDaemon() {
 		FactoryRepoChecker:    w.factoryRepoChecker,
 		FactoryHealthVersions: factoryversions.Read,
 		FactorySkills:         w.factorySkills,
+		StageCronHost:         factoryhost.New(),
 		GithubCallbacks:       w.githubCallbacks,
 		Telemetry:             w.telemetryClient,
 		Notes:                 w.notes,

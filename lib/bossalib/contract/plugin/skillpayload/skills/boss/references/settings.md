@@ -10,23 +10,6 @@ Show authentication status
 boss auth-status
 ```
 
-### `boss config`
-
-Manage configuration
-
-### `boss config init [flags]`
-
-Initialize bossd plugin settings in settings.json from a plugin directory
-
-**Flags:**
-
-- `--plugin-dir` — Directory containing plugin binaries (auto-detected if omitted)
-
-```bash
-boss config init
-boss config init --plugin-dir ./plugins
-```
-
 ### `boss login`
 
 Log in to Bossanova cloud (WorkOS)

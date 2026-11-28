@@ -200,6 +200,12 @@ func (s *Server) TranscriptExists(_ context.Context, _ *bossanovav1.TranscriptEx
 	return &bossanovav1.TranscriptExistsResponse{Exists: false}, nil
 }
 
+func (s *Server) CheckLogin(_ context.Context, _ *bossanovav1.CheckLoginRequest) (*bossanovav1.CheckLoginResponse, error) {
+	return &bossanovav1.CheckLoginResponse{
+		Status: bossanovav1.AgentLoginStatus_AGENT_LOGIN_STATUS_LOGGED_IN,
+	}, nil
+}
+
 // stubSeq is a monotonic counter for generating placeholder session IDs.
 var (
 	seqMu  sync.Mutex

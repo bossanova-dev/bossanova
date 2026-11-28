@@ -13,7 +13,7 @@ func ParkVerdict(raw []string, label string, ev *Evidence, openItems int) (Verdi
 		return Verdict{}, false
 	}
 	v := Verdict{State: "Not verified", Wait: "blocked", Reason: ParkCodePlainWords(code)}
-	if code == ParkCodeHumanMerge {
+	if code == ParkCodeHumanMerge || code == ParkCodeApprovalRequired {
 		v.State = "Verified"
 	}
 	if knownParkCodes[code].signOff {

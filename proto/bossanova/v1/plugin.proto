@@ -487,6 +487,15 @@ service AgentRunnerService {
   // daemon sends the inputs and never interprets them. A plugin whose agent
   // has no question menu returns codes.Unimplemented.
   rpc PlanQuestionAnswer(PlanQuestionAnswerRequest) returns (PlanQuestionAnswerResponse);
+
+  // CheckLogin reports whether the agent CLI's ambient login (the one a run
+  // started from the daemon's own environment would use) is usable. The plugin
+  // runs its CLI's own status command through the login shell, bounded by
+  // AgentLoginProbeTimeout. LOGGED_OUT is returned only on positive evidence;
+  // anything the plugin cannot classify is UNKNOWN. A plugin whose CLI has no
+  // status command returns codes.Unimplemented. The response never carries the
+  // CLI's raw output, which can include an account email or a masked key.
+  rpc CheckLogin(CheckLoginRequest) returns (CheckLoginResponse);
 }
 
 message AgentRunnerServiceGetInfoRequest {}
@@ -1217,4 +1226,20 @@ message PaneInput {
     string key = 1;
     string text = 2;
   }
+}
+
+enum AgentLoginStatus {
+  AGENT_LOGIN_STATUS_UNSPECIFIED = 0;
+  AGENT_LOGIN_STATUS_UNKNOWN = 1;
+  AGENT_LOGIN_STATUS_LOGGED_IN = 2;
+  AGENT_LOGIN_STATUS_LOGGED_OUT = 3;
+}
+
+message CheckLoginRequest {}
+
+message CheckLoginResponse {
+  AgentLoginStatus status = 1;
+  // remedy is the command that fixes a LOGGED_OUT status, e.g. "run `codex login`".
+  // Empty for any other status.
+  string remedy = 2;
 }

@@ -110,8 +110,7 @@ func (g *Group) initCmd() *cobra.Command {
 			"question shows its default and the flag that answers it; a flag already passed\n" +
 			"answers its question. If the run stops early it lists what it already applied, and a\n" +
 			"re-run finishes the job.\n\n" +
-			"Not to be confused with `boss config init`, which initialises bossd plugin\n" +
-			"settings in settings.json and has nothing to do with .boss-skills.json.",
+			"Run `boss init plugins` to record bossd plugin binaries in settings.json.",
 		// Reject positional operands: the target directory is selected via --dir,
 		// and a bare `boss init ../other-repo` must error rather than silently
 		// initialise the working directory instead.
@@ -186,7 +185,7 @@ func (g *Group) initCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&cronOpts.updateConsent, "update-crons", false, "Update an existing pipeline job's prompt, gate and agent when they differ")
 	cmd.Flags().BoolVar(&trust.Yes, "yes", false, "Apply .boss-project.json cron prompt and gate changes without asking")
 	cmd.Flags().BoolVar(&trust.AllowBranch, "allow-branch", false, "Apply .boss-project.json from a checkout that is not on the repo's default branch")
-	cmd.AddCommand(g.initCheckCmd())
+	cmd.AddCommand(g.initCheckCmd(), initPluginsCmd())
 	return cmd
 }
 

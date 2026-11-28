@@ -201,6 +201,8 @@ lint:
 	@node guards/feature-map.mjs ownership --check
 	@node guards/feature-map.mjs guides --check
 	@node guards/feature-map.mjs index --check
+	@node guards/feature-surfaces.mjs
+	@node guards/feature-setup-checks.mjs --check
 	@node guards/feature-coverage.mjs lint --check
 	@node guards/feature-coverage.mjs proofs --check
 # check-js-types.mjs runs tsc --checkJs (scripts/tsconfig.json) over scripts/ and skills-toolbox/

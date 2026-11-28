@@ -2584,6 +2584,49 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.MintProofViewLinkResponse'
+  /bossanova.v1.OrchestratorService/MintPublicProofViewLink:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: MintPublicProofViewLink
+      description: |-
+        MintPublicProofViewLink returns a short-lived signed link to the newest
+         completed hosted proof page of one pull request when the uploading
+         organization has link sharing enabled. Rate-limited per client address.
+         Every miss (sharing off, no upload, incomplete or deleted upload, unknown
+         repo) returns the same NotFound.
+         This additive RPC needs no dated API bump; see
+         docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+      operationId: bossanova.v1.OrchestratorService.MintPublicProofViewLink
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.MintPublicProofViewLinkRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.MintPublicProofViewLinkResponse'
   /bossanova.v1.OrchestratorService/PrepareOrganizationSwitch:
     post:
       tags:
@@ -7873,6 +7916,35 @@ components:
           description: user_settings imported from plugin.proto.
       title: AgentInfo
       additionalProperties: false
+    bossanova.v1.AgentLogin:
+      type: object
+      properties:
+        agentName:
+          type: string
+          title: agent_name
+        status:
+          title: status
+          $ref: '#/components/schemas/bossanova.v1.AgentLoginStatus'
+        remedy:
+          type: string
+          title: remedy
+          description: remedy is set only when status is LOGGED_OUT.
+        hasManagedAccount:
+          type: boolean
+          title: has_managed_account
+          description: |-
+            has_managed_account is true when sessions for this agent bind a managed
+             account, so the CLI's ambient login was not checked (status UNKNOWN).
+      title: AgentLogin
+      additionalProperties: false
+    bossanova.v1.AgentLoginStatus:
+      type: string
+      title: AgentLoginStatus
+      enum:
+        - AGENT_LOGIN_STATUS_UNSPECIFIED
+        - AGENT_LOGIN_STATUS_UNKNOWN
+        - AGENT_LOGIN_STATUS_LOGGED_IN
+        - AGENT_LOGIN_STATUS_LOGGED_OUT
     bossanova.v1.AgentModel:
       type: object
       properties:
@@ -9662,6 +9734,20 @@ components:
          result is a short summary of what the call returned ("12 matches", "+4 -1",
          "exit 1"), set only when the agent's own record of the result states it;
          empty when nothing about the result can be read without guessing.
+    bossanova.v1.CheckAgentLoginsRequest:
+      type: object
+      title: CheckAgentLoginsRequest
+      additionalProperties: false
+    bossanova.v1.CheckAgentLoginsResponse:
+      type: object
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentLogin'
+          title: agents
+      title: CheckAgentLoginsResponse
+      additionalProperties: false
     bossanova.v1.CheckConclusion:
       type: string
       title: CheckConclusion
@@ -9674,6 +9760,24 @@ components:
         - CHECK_CONCLUSION_SKIPPED
         - CHECK_CONCLUSION_TIMED_OUT
       description: CheckConclusion represents the conclusion of a completed CI check.
+    bossanova.v1.CheckLoginRequest:
+      type: object
+      title: CheckLoginRequest
+      additionalProperties: false
+    bossanova.v1.CheckLoginResponse:
+      type: object
+      properties:
+        status:
+          title: status
+          $ref: '#/components/schemas/bossanova.v1.AgentLoginStatus'
+        remedy:
+          type: string
+          title: remedy
+          description: |-
+            remedy is the command that fixes a LOGGED_OUT status, e.g. "run `codex login`".
+             Empty for any other status.
+      title: CheckLoginResponse
+      additionalProperties: false
     bossanova.v1.CheckResult:
       type: object
       properties:
@@ -17396,6 +17500,41 @@ components:
           $ref: '#/components/schemas/google.protobuf.Timestamp'
       title: MintProofViewLinkResponse
       additionalProperties: false
+    bossanova.v1.MintPublicProofViewLinkRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: The repository's origin URL, canonicalized as StartProofUpload does.
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        headSha:
+          type: string
+          title: head_sha
+          description: |-
+            The head the page was made for; empty means the newest completed upload
+             for the pull request.
+      title: MintPublicProofViewLinkRequest
+      additionalProperties: false
+      description: |-
+        MintPublicProofViewLinkRequest names one pull request's hosted proof page
+         for an unauthenticated viewer when the owning organization enables link
+         sharing.
+    bossanova.v1.MintPublicProofViewLinkResponse:
+      type: object
+      properties:
+        viewUrl:
+          type: string
+          title: view_url
+          description: https://<org label>.<uploads domain>/v1.<exp>.<sig>/<token>/
+        expiresAt:
+          title: expires_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: MintPublicProofViewLinkResponse
+      additionalProperties: false
     bossanova.v1.MoveDirection:
       type: string
       title: MoveDirection
@@ -19058,6 +19197,22 @@ components:
           description: |-
             bosso-local users.id of the owner who turned it off; empty while on or
              when that user has been deleted.
+        isLinkSharingEnabled:
+          type: boolean
+          title: is_link_sharing_enabled
+          description: |-
+            Whether anyone with the link can view the organization's hosted proof
+             pages. Off by default (additive field; needs no dated API bump).
+        linkSharingEnabledAt:
+          title: link_sharing_enabled_at
+          description: When an owner turned link sharing on; unset while off.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        linkSharingEnabledByUserId:
+          type: string
+          title: link_sharing_enabled_by_user_id
+          description: |-
+            bosso-local users.id of the owner who turned link sharing on; empty while
+             off or when that user has been deleted.
       title: OrganizationProofHosting
       additionalProperties: false
       description: |-
@@ -23522,6 +23677,29 @@ components:
           $ref: '#/components/schemas/bossanova.v1.CloudAccessStatus'
       title: RefreshCloudEntitlementsResponse
       additionalProperties: false
+    bossanova.v1.RefreshRepoOriginRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: RefreshRepoOriginRequest
+      additionalProperties: false
+    bossanova.v1.RefreshRepoOriginResponse:
+      type: object
+      properties:
+        repo:
+          title: repo
+          description: The repo after the refresh; its origin_url is the remote's URL.
+          $ref: '#/components/schemas/bossanova.v1.Repo'
+        previousOriginUrl:
+          type: string
+          title: previous_origin_url
+          description: |-
+            The stored origin before the refresh. Equal to repo.origin_url when the
+             remote already matched.
+      title: RefreshRepoOriginResponse
+      additionalProperties: false
     bossanova.v1.RefreshSessionPRRequest:
       type: object
       properties:
@@ -26405,6 +26583,22 @@ components:
              an operator and never changes afterwards.
              No dated API bump: additive output field older clients ignore. See
              docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        repairQueuedAt:
+          oneOf:
+            - $ref: '#/components/schemas/google.protobuf.Timestamp'
+            - type: "null"
+          title: repair_queued_at
+          description: |-
+            When this session was first deferred behind the host repair concurrency
+             cap, while the repair plugin is still refreshing its queued mark and no
+             repair lease is active. Absent when not queued or once a repair lease is
+             held, released, or the mark lapses past its TTL without refresh.
+
+             Transport-only: hydrated server-side from the in-memory RepairLeaseManager
+             and NEVER persisted, matching repair_active (53) and repair_stalled_at (64).
+             No dated API bump: additive optional output field older clients ignore
+             without changing existing behavior. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -27274,6 +27468,15 @@ components:
         isEnabled:
           type: boolean
           title: is_enabled
+        isLinkSharingEnabled:
+          type:
+            - boolean
+            - "null"
+          title: is_link_sharing_enabled
+          description: |-
+            Optional: when set, turns "anyone with the link can view" on or off; when
+             omitted, leaves link sharing unchanged. Adding an optional field is
+             additive and needs no dated API bump.
       title: SetOrganizationProofHostingRequest
       additionalProperties: false
     bossanova.v1.SetOrganizationProofHostingResponse:
@@ -27305,6 +27508,14 @@ components:
              same id, refused with FailedPrecondition for a different one while held);
              is_repairing=false releases it. Empty for legacy callers, which then only
              toggle the advisory display flag without lease enforcement.
+        isQueued:
+          type: boolean
+          title: is_queued
+          description: |-
+            When true, marks the session as queued behind the host repair concurrency
+             cap without taking a lease, setting display_is_repairing, or releasing any
+             held lease. Repeated calls refresh the queued mark's TTL while keeping the
+             original queued timestamp.
       title: SetRepairStatusRequest
       additionalProperties: false
     bossanova.v1.SetRepairStatusResponse:

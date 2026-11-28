@@ -567,8 +567,9 @@ written through. `--force` rewrites rather than refreshes. It writes detected
 output only, so the previous file is discarded whole, including hand-tuned values
 inside `commands`.
 
-`boss init` is a different command from `boss config init`, which initialises
-bossd plugin settings in `settings.json` and touches no `.boss-skills.json`.
+To initialise bossd plugin settings in `settings.json` without touching
+`.boss-skills.json`, run `boss init plugins` (`boss config init` is a deprecated
+alias).
 
 See [Skill Configuration](/skills/config) for the sections this file carries and
 the smallest config that switches the tracker-driven skills on.

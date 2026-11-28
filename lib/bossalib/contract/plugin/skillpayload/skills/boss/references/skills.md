@@ -40,6 +40,19 @@ Inspect Bossanova setup checks without changing anything
 - `--dir` — Repository directory to inspect (default: the working directory)
 - `--json` — Emit setup checks as JSON matching the MCP list_setup_checks tool
 
+### `boss init plugins [flags]`
+
+Initialize bossd plugin settings in settings.json from a plugin directory
+
+**Flags:**
+
+- `--plugin-dir` — Directory containing plugin binaries (auto-detected if omitted)
+
+```bash
+boss init plugins
+boss init plugins --plugin-dir ./plugins
+```
+
 ### `boss skills`
 
 Manage installed boss skills

@@ -81,9 +81,19 @@ test('getSession documents the Phase-3 routing signals', () => {
   // conflict-after-green so a "Passing but conflicting" PR goes to repair rather
   // than being treated as ordinary mergeable work (codex P2 on PR #1112).
   const response = bossSessionOperationMap.getSession.response
-  for (const field of ['attention_status.reason', 'pr_mergeable', 'merge_block']) {
+  for (const field of [
+    'repair_active',
+    'repair_queued_at',
+    'attention_status.reason',
+    'pr_mergeable',
+    'merge_block',
+  ]) {
     assert.ok(response.includes(field), `getSession missing routing signal ${field}`)
   }
+  assert.ok(
+    bossSessionOperationMap.getSession.cli.response.includes('session.repair_queued_at'),
+    'getSession cli missing session.repair_queued_at',
+  )
   // display_label carries the daemon's computed Ready label, which boss-epic's
   // settle helper reads.
   assert.ok(response.includes('display_label'), 'getSession missing display_label')

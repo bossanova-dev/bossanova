@@ -17,13 +17,14 @@ import (
 const preflightRetryInterval = time.Second
 
 // ErrPreflightCancelled is returned by RunDaemonWait when the user dismisses
-// the screen before the daemon recovers. Callers translate this into a
-// clean exit instead of an error message.
+// the screen before the daemon recovers, or by RunPreflight when the user
+// cancels a warning screen with ctrl+c. Callers translate this into a clean
+// exit instead of an error message.
 var ErrPreflightCancelled = errors.New("preflight cancelled")
 
-// PreflightModel is a blocking screen shown when a startup check fails
-// (missing required software, daemon unreachable). It accepts q / esc /
-// ctrl+c to quit so the user is never stranded.
+// PreflightModel displays a preflight screen when a startup check fails or
+// warns. Blocking screens accept q / esc / ctrl+c to quit; warning screens
+// accept enter / space / esc / q to continue and ctrl+c to cancel startup.
 //
 // When retryCheck is non-nil, the screen polls it on a ticker and exits
 // successfully (recovered=true) the first time it returns true — the
@@ -33,6 +34,7 @@ type PreflightModel struct {
 	Width      int
 	retryCheck func() bool
 	recovered  bool
+	cancelled  bool
 }
 
 // NewPreflightModel wraps an Issue in a Bubble Tea model with no auto-retry.
@@ -61,6 +63,16 @@ func (m PreflightModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 	case tea.KeyMsg:
+		if m.issue.Warning {
+			switch msg.String() {
+			case "ctrl+c":
+				m.cancelled = true
+				return m, tea.Quit
+			case "enter", " ", "space", "q", "esc":
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
@@ -78,7 +90,11 @@ func (m PreflightModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m PreflightModel) View() tea.View {
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(ui.ColorDanger).Padding(0, 2)
+	titleColor := ui.ColorDanger
+	if m.issue.Warning {
+		titleColor = ui.ColorWarning
+	}
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(titleColor).Padding(0, 2)
 	bodyStyle := lipgloss.NewStyle().Padding(0, 2)
 	if m.Width > 0 {
 		// KNOWN BUG, do NOT copy: .Width() already includes the padding, so
@@ -97,6 +113,8 @@ func (m PreflightModel) View() tea.View {
 			Render("Waiting for the daemon… will reconnect automatically.")
 		footer = waiting + "\n" + ui.StyleActionBar.Render("[q]uit")
 		footerGap = "\n\n"
+	} else if m.issue.Warning {
+		footer = ui.StyleActionBar.Render("Press enter to continue.")
 	}
 
 	content := RenderBanner(ui.ViewHome, BannerOpts{}) + "\n" +
@@ -110,12 +128,21 @@ func (m PreflightModel) View() tea.View {
 }
 
 // RunPreflight runs a tea.Program that displays the preflight issue and
-// blocks until the user quits. Use this for unrecoverable failures (e.g.
-// missing software) where retrying in-place wouldn't help.
+// blocks until the user dismisses it. Warning issues return
+// ErrPreflightCancelled on ctrl+c and nil on any continue key.
 func RunPreflight(issue preflight.Issue) error {
 	p := tea.NewProgram(NewPreflightModel(issue))
-	_, err := p.Run()
-	return err
+	return preflightResult(p.Run())
+}
+
+func preflightResult(final tea.Model, err error) error {
+	if err != nil {
+		return err
+	}
+	if pm, ok := final.(PreflightModel); ok && pm.cancelled {
+		return ErrPreflightCancelled
+	}
+	return nil
 }
 
 // RunDaemonWait shows the preflight screen and polls check on a ticker

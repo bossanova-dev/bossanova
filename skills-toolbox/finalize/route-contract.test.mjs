@@ -36,6 +36,7 @@ test('terminal routes cover exactly the four published outcomes', () => {
     'entry-state-restored',
     'already-satisfied-closed',
     'no-change-breadcrumb-written',
+    'no-change-parked',
     'pr-merged-by-completion',
   ])
   for (const [outcome, tokens] of Object.entries(TERMINAL_ROUTES)) {
@@ -253,4 +254,30 @@ test('already-satisfied close is exclusive with restoring and belongs only to NO
     assert.equal(result.honestOutcome, 'ROUTE_UNSATISFIED')
     assert.equal(result.error, 'already-satisfied-closed outside NO_CHANGE')
   }
+})
+
+test('NO_CHANGE accepts no-change-parked and rejects it alongside already-satisfied-closed', () => {
+  const { receipt, runId } = fixture()
+  stampObligation(receipt, 'entry-state-restored', { runId, now: '2026-08-25T00:00:00.000Z' })
+  stampObligation(receipt, 'no-change-parked', { runId, now: '2026-08-25T00:00:00.000Z' })
+  for (const token of TERMINAL_ROUTES.NO_CHANGE) {
+    stampObligation(receipt, token, { runId, now: '2026-08-25T00:00:00.000Z' })
+  }
+  const parsed = JSON.parse(fs.readFileSync(receipt, 'utf8'))
+  const accepted = assertRouteSatisfied('NO_CHANGE', parsed)
+  assert.equal(accepted.ok, true)
+  assert.equal(accepted.honestOutcome, 'NO_CHANGE')
+
+  const parkedOnly = TERMINAL_ROUTES.NO_CHANGE.map((token) => ({ token })).concat({
+    token: 'no-change-parked',
+  })
+  assert.equal(assertRouteSatisfied('NO_CHANGE', parkedOnly).ok, true)
+
+  const conflict = assertRouteSatisfied('NO_CHANGE', [
+    ...parkedOnly,
+    { token: 'already-satisfied-closed' },
+  ])
+  assert.equal(conflict.ok, false)
+  assert.equal(conflict.honestOutcome, 'ROUTE_UNSATISFIED')
+  assert.equal(conflict.error, 'conflicting no-change dispositions')
 })

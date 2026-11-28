@@ -267,6 +267,69 @@ func TestSessionShowJSONRepairActive_Sessions_AC144(t *testing.T) {
 	}
 }
 
+func TestSessionShowJSONRepairQueued_Sessions_AC268902(t *testing.T) {
+	queuedAt := timestamppb.New(time.Date(2026, 11, 27, 14, 0, 0, 0, time.UTC))
+	for _, tt := range []struct {
+		name         string
+		session      *pb.Session
+		wantActive   string
+		wantQueuedAt string
+	}{
+		{
+			name:         "queued waiting for repair slot",
+			session:      &pb.Session{RepairActive: false, RepairQueuedAt: queuedAt},
+			wantActive:   "false",
+			wantQueuedAt: `"2026-11-27T14:00:00Z"`,
+		},
+		{
+			name:         "not queued",
+			session:      &pb.Session{RepairActive: false},
+			wantActive:   "false",
+			wantQueuedAt: `""`,
+		},
+		{
+			name:         "repair started",
+			session:      &pb.Session{RepairActive: true},
+			wantActive:   "true",
+			wantQueuedAt: `""`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(sessionShowJSON{
+				Session: newSessionDetailJSON(tt.session),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var envelope struct {
+				Session map[string]json.RawMessage `json:"session"`
+			}
+			if err := json.Unmarshal(encoded, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(envelope.Session["repair_active"]); got != tt.wantActive {
+				t.Fatalf("session.repair_active = %s, want %s", got, tt.wantActive)
+			}
+			gotQueued, ok := envelope.Session["repair_queued_at"]
+			if !ok {
+				t.Fatalf("session missing repair_queued_at key: %s", encoded)
+			}
+			if string(gotQueued) != tt.wantQueuedAt {
+				t.Fatalf("session.repair_queued_at = %s, want %s", gotQueued, tt.wantQueuedAt)
+			}
+		})
+	}
+	t.Run("ls_row_omits_repair_queued_at", func(t *testing.T) {
+		encoded, err := json.Marshal(newSessionRowJSON(&pb.Session{Id: "s1", RepairQueuedAt: queuedAt}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), "repair_queued_at") {
+			t.Fatalf("boss ls --json unexpectedly emitted repair_queued_at: %s", encoded)
+		}
+	})
+}
+
 func TestSessionDetailJSONRepoCanAutoRepair(t *testing.T) {
 	for _, tt := range []struct {
 		name        string

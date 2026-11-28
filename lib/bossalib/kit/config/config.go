@@ -102,6 +102,11 @@ type RepairSkills struct {
 	Repair string `json:"repair,omitempty"`
 }
 
+// DefaultMaxConcurrentRepairs is the default maximum number of concurrent
+// automated repairs allowed per host when MaxConcurrentRepairs is unset or
+// non-positive.
+const DefaultMaxConcurrentRepairs = 3
+
 // RepairConfig holds configuration for the repair plugin.
 type RepairConfig struct {
 	Skills                     RepairSkills `json:"skills,omitzero"`
@@ -109,6 +114,16 @@ type RepairConfig struct {
 	PollIntervalSeconds        int          `json:"poll_interval_seconds,omitempty"`
 	SweepIntervalMinutes       int          `json:"sweep_interval_minutes,omitempty"`
 	IdleRepairThresholdMinutes int          `json:"idle_repair_threshold_minutes,omitempty"`
+	MaxConcurrentRepairs       int          `json:"max_concurrent_repairs,omitempty"`
+}
+
+// MaxConcurrentRepairsOrDefault returns the configured host-wide repair
+// concurrency cap or the default of 3 when unset or non-positive.
+func (c RepairConfig) MaxConcurrentRepairsOrDefault() int {
+	if c.MaxConcurrentRepairs > 0 {
+		return c.MaxConcurrentRepairs
+	}
+	return DefaultMaxConcurrentRepairs
 }
 
 // CooldownDuration returns the configured cooldown or the default of 1 minute.

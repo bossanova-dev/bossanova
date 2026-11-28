@@ -206,6 +206,11 @@ message SetRepairStatusRequest {
   // is_repairing=false releases it. Empty for legacy callers, which then only
   // toggle the advisory display flag without lease enforcement.
   string dispatcher_id = 3;
+  // When true, marks the session as queued behind the host repair concurrency
+  // cap without taking a lease, setting display_is_repairing, or releasing any
+  // held lease. Repeated calls refresh the queued mark's TTL while keeping the
+  // original queued timestamp.
+  bool is_queued = 4;
 }
 
 message SetRepairStatusResponse {}

@@ -80,6 +80,12 @@ func (w *daemonWiring) wireStreamObservers() {
 	w.displayTracker.SetOnAttentionChange(func(sessionID string) {
 		publishSessionUpdated(context.Background(), sessionID)
 	})
+	// Repair queue transitions change attention (suppressing "no repair is
+	// running" and finished-attempt conflict FIX) without moving the display
+	// trio, so publish an updated session delta explicitly.
+	w.repairLease.SetOnQueueChange(func(sessionID string) {
+		publishSessionUpdated(context.Background(), sessionID)
+	})
 	// A restart-proof activity read that outlasted its caller's wait landed
 	// after the delta or snapshot that started it went out with the older
 	// value; republish so bosso and the web see it.

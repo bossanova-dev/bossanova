@@ -48,8 +48,50 @@ var safeAgentCommandPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // Issue describes a failed preflight check. Title is a short headline shown
 // in bold; Detail is the multi-line explanation including install hints.
 type Issue struct {
-	Title  string
-	Detail string
+	Title   string
+	Detail  string
+	Warning bool
+}
+
+type LoggedOutAgent struct {
+	Agent  string
+	Remedy string
+}
+
+func AgentLoginWarning(agents []LoggedOutAgent) *Issue {
+	if len(agents) == 0 {
+		return nil
+	}
+	names := make([]string, len(agents))
+	remedies := make([]string, len(agents))
+	for i, a := range agents {
+		names[i] = a.Agent
+		remedies[i] = fmt.Sprintf("  %s: %s", a.Agent, a.Remedy)
+	}
+	verb := "is"
+	lead := "Sessions using this agent fail until the CLI is logged in. Boss starts anyway."
+	if len(agents) > 1 {
+		verb = "are"
+		lead = "Sessions using these agents fail until the CLI is logged in. Boss starts anyway."
+	}
+	return &Issue{
+		Title:   fmt.Sprintf("%s %s not logged in", joinAgentNames(names), verb),
+		Detail:  lead + "\n\n" + strings.Join(remedies, "\n"),
+		Warning: true,
+	}
+}
+
+func joinAgentNames(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	case 2:
+		return names[0] + " and " + names[1]
+	default:
+		return strings.Join(names[:len(names)-1], ", ") + ", and " + names[len(names)-1]
+	}
 }
 
 // CheckTmux verifies that the tmux binary is on PATH. Boss uses tmux to

@@ -119,9 +119,10 @@ type sessionDetailJSON struct {
 	// It is deliberately NOT on sessionJSON: `boss ls --json` is the widest
 	// contract in this file, and a raw multi-line transport error on every row is
 	// noise for the list use case. Detail is where triage happens.
-	BlockedReason *string            `json:"blocked_reason"`
-	LastRepair    *sessionRepairJSON `json:"last_repair"`
-	RepairActive  bool               `json:"repair_active"`
+	BlockedReason  *string            `json:"blocked_reason"`
+	LastRepair     *sessionRepairJSON `json:"last_repair"`
+	RepairActive   bool               `json:"repair_active"`
+	RepairQueuedAt string             `json:"repair_queued_at"`
 }
 
 // sessionMergeBlockJSON explains why a session's PR cannot currently be merged.
@@ -205,6 +206,7 @@ func newSessionDetailJSON(s *pb.Session) sessionDetailJSON {
 		ArchivedAt:             cliutil.Rfc3339OrEmpty(s.GetArchivedAt()),
 		SetupError:             s.GetSetupError(),
 		RepairActive:           s.GetRepairActive(),
+		RepairQueuedAt:         cliutil.Rfc3339OrEmpty(s.GetRepairQueuedAt()),
 	}
 	if s.GetRepoDisplayName() != "" {
 		archive := s.GetRepoShouldArchiveSessionsAfterMerge()

@@ -329,6 +329,7 @@ func TestProjectApplyCloudRefusals(t *testing.T) {
 		}))
 		t.Cleanup(srv.Close)
 		mgr := auth.NewManager(emptyTokenStore{}, auth.Config{})
+		mgr.MarkExplicitCredential()
 		f.env.cloudApply = func(cmd *cobra.Command) (projectCloudApplyClient, error) {
 			remote, err := cliutil.DialCloudRemote(cmd.Context(), mgr, srv.URL, errProjectApplyNotLoggedIn)
 			if err != nil {

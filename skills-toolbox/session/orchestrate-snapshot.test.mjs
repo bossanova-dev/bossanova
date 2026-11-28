@@ -502,6 +502,25 @@ test('a conflict that bossd is already repairing is left to that repair', () => 
   assert.equal(classify(early, [repairChat], pr).action, 'working')
 })
 
+test('a session queued for a bossd repair slot is classified as working, not a repair action @sessions.AC268904', () => {
+  const conflictPr = prState({ merge_state_status: 'dirty', is_mergeable: false })
+  const queued = { repair_active: false, repair_queued_at: '2026-11-07T08:40:00Z' }
+  for (const pr of [conflictPr, failingPr()]) {
+    const verdict = classify(queued, [stoppedChat], pr)
+    assert.equal(verdict.action, 'working')
+    assert.equal(verdict.why, 'bossd repair queued since 2026-11-07T08:40:00Z')
+    assert.equal(remedy(verdict, { host: 'build-host', session: session(queued), pr: 12 }), '')
+    const seen = {}
+    const rows = [{ host: 'build-host', session: 's1', autoRepair: true, ...verdict }]
+    applyGrace(rows, seen, NOW)
+    applyGrace(rows, seen, NOW + 2 * AUTOMATION_GRACE)
+    assert.equal(rows[0].action, 'working')
+    assert.deepEqual(seen, {})
+  }
+  const cleared = { repair_active: false, repair_queued_at: '' }
+  assert.equal(classify(cleared, [stoppedChat], conflictPr).action, 'repair')
+})
+
 test('a finished bossd repair whose flag lags routes the failing check on', () => {
   const s = { repair_active: true, last_repair: { started_at: '2026-11-07T08:20:00Z' } }
   const finished = {
@@ -804,7 +823,11 @@ test('a chat showing a dialog is read, then approved or nudged', () => {
 
 test('a finished verify chat left at QUESTION on a policy-parked head awaits the operator', () => {
   const verifyChat = chatRow({ agent_session_id: 'c-verify', role: 'verify', status: 'QUESTION' })
-  for (const reason of ['always-human-path', 'human-review:ui,human-review:security']) {
+  for (const reason of [
+    'always-human-path',
+    'human-review:ui,human-review:security',
+    'approval-required',
+  ]) {
     const pr = prState(parked(reason))
     assert.equal(classify({}, [verifyChat], pr).action, 'awaiting-operator', reason)
   }

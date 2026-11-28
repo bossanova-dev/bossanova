@@ -65,6 +65,7 @@ func (w *daemonWiring) wireRepairPlugin() error {
 				Int("cooldown_minutes", w.settings.Repair.CooldownMinutes).
 				Int("sweep_interval_minutes", w.settings.Repair.SweepIntervalMinutes).
 				Int("idle_repair_threshold_minutes", w.settings.Repair.IdleRepairThresholdMinutes).
+				Int("max_concurrent_repairs", w.settings.Repair.MaxConcurrentRepairsOrDefault()).
 				Msg("repair plugin running")
 		}
 		cancel()

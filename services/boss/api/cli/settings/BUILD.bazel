@@ -15,8 +15,8 @@ go_library(
     importpath = "github.com/recurser/boss/api/cli/settings",
     visibility = ["//visibility:public"],
     deps = [
+        "//lib/bossalib/contract/cloud/cloudorigin",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/kit/buildinfo",
         "//lib/bossalib/kit/config",
         "//lib/bossalib/kit/telemetry",
         "//services/boss/api/cli/cliutil",
@@ -36,7 +36,6 @@ go_test(
         "auth_status_test.go",
         "auth_test.go",
         "cloud_gate_test.go",
-        "config_init_test.go",
         "helpers_test.go",
         "settings_cloud_control_test.go",
         "settings_daemon_name_test.go",

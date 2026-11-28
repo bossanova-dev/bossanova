@@ -104,6 +104,16 @@ func (g *Group) runRepoUpdate(cmd *cobra.Command, repoID string) error {
 	}
 
 	ctx := context.Background()
+	if refresh, _ := cmd.Flags().GetBool(refreshOriginFlag); refresh {
+		resp, err := c.RefreshRepoOrigin(ctx, repoID)
+		if err != nil {
+			return fmt.Errorf("refresh origin: %w", err)
+		}
+		printRefreshedOrigin(cmd.OutOrStdout(), resp)
+	}
+	if req == nil {
+		return nil
+	}
 	repo, err := c.UpdateRepo(ctx, req)
 	if err != nil {
 		return fmt.Errorf("update repo: %w", err)
@@ -111,6 +121,18 @@ func (g *Group) runRepoUpdate(cmd *cobra.Command, repoID string) error {
 
 	printUpdatedRepo(cmd.OutOrStdout(), c, repo)
 	return nil
+}
+
+const refreshOriginFlag = "refresh-origin"
+
+func printRefreshedOrigin(w io.Writer, resp *pb.RefreshRepoOriginResponse) {
+	previous, current := resp.GetPreviousOriginUrl(), resp.GetRepo().GetOriginUrl()
+	if previous == current {
+		_, _ = fmt.Fprintf(w, "Origin unchanged: %s\n", current)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "Origin refreshed.\n  Old origin: %s\n  New origin: %s\n", previous, current)
+	_, _ = fmt.Fprintln(w, "Cloud webhook routing switches to the new origin when the daemon next connects; run boss daemon restart to switch it now.")
 }
 
 func (g *Group) runRepoShow(cmd *cobra.Command, repoID string) error {
@@ -171,7 +193,8 @@ func printRepoSettings(w io.Writer, c Client, repo *pb.Repo) {
 
 // buildRepoUpdateRequest maps the `boss repo update` flags that were actually
 // set onto an UpdateRepoRequest, so the mapping is testable without a daemon.
-// It errors when no flag was set or when a flag pair conflicts. Path validation
+// It returns a nil request when --refresh-origin is the only flag, and errors
+// when no flag was set or when a flag pair conflicts. Path validation
 // for --worktree-base-dir is the daemon's (it must be absolute).
 func buildRepoUpdateRequest(cmd *cobra.Command, repoID string) (*pb.UpdateRepoRequest, error) {
 	req := &pb.UpdateRepoRequest{Id: repoID}
@@ -241,7 +264,10 @@ func buildRepoUpdateRequest(cmd *cobra.Command, repoID string) (*pb.UpdateRepoRe
 	}
 
 	if !anyChanged {
-		return nil, fmt.Errorf("no flags provided — use --name, --setup-script, --serve-script, --merge-strategy, --worktree-base-dir, --trusted, or boolean flags; run \"boss repo show %s\" to see the current settings", repoID)
+		if refresh, _ := cmd.Flags().GetBool(refreshOriginFlag); refresh {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("no flags provided — use --name, --setup-script, --serve-script, --merge-strategy, --worktree-base-dir, --trusted, --refresh-origin, or boolean flags; run \"boss repo show %s\" to see the current settings", repoID)
 	}
 	return req, nil
 }

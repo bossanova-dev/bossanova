@@ -54,6 +54,9 @@ var (
 
 	_ QuestionMenus = (*agentRunnerProxy)(nil)
 	_ QuestionMenus = (*agentRunnerGRPCClient)(nil)
+
+	_ LoginChecker = (*agentRunnerProxy)(nil)
+	_ LoginChecker = (*agentRunnerGRPCClient)(nil)
 )
 
 func (p *agentRunnerProxy) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
@@ -282,4 +285,16 @@ func (p *agentRunnerProxy) ReadQuestionMenu(ctx context.Context, req *bossanovav
 		return nil, grpcstatus.Errorf(codes.Unimplemented, "agent %q cannot read a question menu", p.name)
 	}
 	return menus.ReadQuestionMenu(ctx, req)
+}
+
+func (p *agentRunnerProxy) CheckLogin(ctx context.Context, req *bossanovav1.CheckLoginRequest) (*bossanovav1.CheckLoginResponse, error) {
+	r, err := p.resolve()
+	if err != nil {
+		return nil, err
+	}
+	checker, ok := r.(LoginChecker)
+	if !ok {
+		return nil, grpcstatus.Errorf(codes.Unimplemented, "agent %q cannot check login", p.name)
+	}
+	return checker.CheckLogin(ctx, req)
 }

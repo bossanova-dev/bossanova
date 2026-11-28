@@ -57,6 +57,7 @@ go_library(
         "terminal_upload.go",
         "terminal_upload_only.go",
         "token_refresh.go",
+        "token_scope.go",
         "tokens.go",
         "trigger_gate.go",
         "trigger_launch.go",
@@ -71,6 +72,7 @@ go_library(
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
         "//lib/bossalib/broadcast",
+        "//lib/bossalib/contract/cloud/cloudorigin",
         "//lib/bossalib/contract/cloud/createframe",
         "//lib/bossalib/contract/cloud/daemonproof",
         "//lib/bossalib/contract/cloud/pubsub",
@@ -163,6 +165,7 @@ go_test(
         "terminal_upload_only_test.go",
         "terminal_upload_test.go",
         "token_refresh_test.go",
+        "token_scope_test.go",
         "tokens_keyring_test.go",
         "tokens_refresh_test.go",
         "trigger_gate_test.go",
@@ -188,6 +191,7 @@ go_test(
     embed = [":upstream"],
     deps = [
         "//lib/bossalib/broadcast",
+        "//lib/bossalib/contract/cloud/cloudorigin",
         "//lib/bossalib/contract/cloud/daemonproof",
         "//lib/bossalib/contract/cloud/sqlutil",
         "//lib/bossalib/gen/bossanova/v1:bossanova",

@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/auth"
+	"github.com/recurser/boss/internal/domain/display"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -1147,4 +1148,143 @@ func TestRepoAdd_TrustRequest(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestRepoAddInitialPath_Repos_AC271701(t *testing.T) {
+	t.Run("valid response advances to details and esc returns to input", func(t *testing.T) {
+		dir := "/code/my-app"
+		resp := &pb.ValidateRepoPathResponse{
+			IsValid:       true,
+			IsGithub:      true,
+			OriginUrl:     "https://github.com/owner/my-app.git",
+			DefaultBranch: "main",
+		}
+		sc := &repoAddStubClient{validateResp: resp}
+		m := NewRepoAddModel(sc, context.Background())
+		m.SetGitHubActions(fakeGitHubActions{})
+		m.SetInitialPath(dir)
+
+		cmd := m.Init()
+		if cmd == nil {
+			t.Fatal("Init() returned nil cmd; expected validation command")
+		}
+		msg := cmd()
+		vMsg, ok := msg.(RepoValidatedMsg)
+		if !ok {
+			t.Fatalf("Init() cmd returned %T, want RepoValidatedMsg", msg)
+		}
+		if sc.validatePath != dir {
+			t.Fatalf("ValidateRepoPath path = %q, want %q", sc.validatePath, dir)
+		}
+
+		m = sendRepoAddMsg(t, m, vMsg)
+		if m.phase != repoAddPhaseDetails {
+			t.Fatalf("phase = %d, want repoAddPhaseDetails (%d)", m.phase, repoAddPhaseDetails)
+		}
+		if m.fd.localPath != dir {
+			t.Fatalf("fd.localPath = %q, want %q", m.fd.localPath, dir)
+		}
+		wantName, wantBranch := display.RepoNameAndBranch(dir, resp)
+		if m.fd.name != wantName {
+			t.Fatalf("fd.name = %q, want %q", m.fd.name, wantName)
+		}
+		if m.detectedBaseBranch != wantBranch {
+			t.Fatalf("detectedBaseBranch = %q, want %q", m.detectedBaseBranch, wantBranch)
+		}
+
+		m = sendRepoAddMsg(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+		if m.phase != repoAddPhaseInput {
+			t.Fatalf("after esc from details, phase = %d, want repoAddPhaseInput (%d)", m.phase, repoAddPhaseInput)
+		}
+		if m.Cancelled() {
+			t.Fatal("esc from details should return to input, not cancel")
+		}
+		if m.fd.localPath != dir {
+			t.Fatalf("after esc from details, fd.localPath = %q, want %q", m.fd.localPath, dir)
+		}
+		if m.form == nil {
+			t.Fatal("expected input form to be rebuilt on esc from details")
+		}
+	})
+
+	t.Run("invalid response returns to input with daemon error and preserved path", func(t *testing.T) {
+		dir := "/code/not-a-repo"
+		sc := &repoAddStubClient{
+			validateResp: &pb.ValidateRepoPathResponse{
+				IsValid:      false,
+				ErrorMessage: "not a git repository",
+			},
+		}
+		m := NewRepoAddModel(sc, context.Background())
+		m.SetGitHubActions(fakeGitHubActions{})
+		m.SetInitialPath(dir)
+
+		cmd := m.Init()
+		if cmd == nil {
+			t.Fatal("Init() returned nil cmd; expected validation command")
+		}
+		msg := cmd()
+		if sc.validatePath != dir {
+			t.Fatalf("ValidateRepoPath path = %q, want %q", sc.validatePath, dir)
+		}
+
+		m = sendRepoAddMsg(t, m, msg)
+		if m.phase != repoAddPhaseInput {
+			t.Fatalf("phase = %d, want repoAddPhaseInput (%d)", m.phase, repoAddPhaseInput)
+		}
+		if m.err == nil || m.err.Error() != "not a git repository" {
+			t.Fatalf("err = %v, want 'not a git repository'", m.err)
+		}
+		if m.fd.localPath != dir {
+			t.Fatalf("fd.localPath = %q, want %q", m.fd.localPath, dir)
+		}
+		if m.form == nil {
+			t.Fatal("expected input form to be built after invalid validation")
+		}
+	})
+
+	t.Run("while validating ignores Enter and keeps ctrl+x back alias active", func(t *testing.T) {
+		dir := "/code/my-app"
+		sc := &repoAddStubClient{}
+		m := NewRepoAddModel(sc, context.Background())
+		m.SetGitHubActions(fakeGitHubActions{})
+		m.SetInitialPath(dir)
+
+		if cmd := m.Init(); cmd == nil {
+			t.Fatal("Init() returned nil cmd; expected validation command")
+		}
+		if m.TextEntryActive() {
+			t.Fatal("TextEntryActive() = true during initial validation; want false so ctrl+x stays active")
+		}
+
+		// Focus events must not activate a hidden form while validating.
+		updated, cmd := m.Update(tea.FocusMsg{})
+		m = updated.(RepoAddModel)
+		if cmd != nil {
+			t.Fatalf("FocusMsg during validation returned unexpected cmd")
+		}
+		if m.TextEntryActive() {
+			t.Fatal("TextEntryActive() = true after FocusMsg during validation; want false")
+		}
+
+		// Enter must not submit a hidden input form or fire a duplicate validation RPC.
+		updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = updated.(RepoAddModel)
+		if cmd != nil {
+			t.Fatal("Enter during initial validation returned non-nil cmd; expected hidden form not to submit")
+		}
+		if !m.validating {
+			t.Fatal("expected model to remain validating after Enter")
+		}
+
+		// An RPC failure followed by Esc must still rebuild the editable input form.
+		m = sendRepoAddMsg(t, m, RepoValidatedMsg{Err: fmt.Errorf("daemon unavailable")})
+		if m.err == nil {
+			t.Fatal("expected RPC error to be recorded")
+		}
+		m = sendRepoAddMsg(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+		if m.phase != repoAddPhaseInput || m.form == nil || m.fd.localPath != dir {
+			t.Fatalf("after esc from RPC error: phase=%d form=%v path=%q, want input form with %q", m.phase, m.form != nil, m.fd.localPath, dir)
+		}
+	})
 }

@@ -71,6 +71,20 @@ func TestProbeRateLimitAlwaysUnsupported(t *testing.T) {
 	}
 }
 
+func TestCheckLoginAlwaysLoggedIn(t *testing.T) {
+	s := newServer(zerolog.Nop())
+	resp, err := s.CheckLogin(context.Background(), &bossanovav1.CheckLoginRequest{})
+	if err != nil {
+		t.Fatalf("CheckLogin: %v", err)
+	}
+	if got := resp.GetStatus(); got != bossanovav1.AgentLoginStatus_AGENT_LOGIN_STATUS_LOGGED_IN {
+		t.Errorf("Status = %v, want LOGGED_IN for stub", got)
+	}
+	if got := resp.GetRemedy(); got != "" {
+		t.Errorf("Remedy = %q, want empty for LOGGED_IN", got)
+	}
+}
+
 func TestRemoveAgentRunHookDispatch(t *testing.T) {
 	client := newGeneratedTestClient(t)
 	resp, err := client.RemoveAgentRunHook(context.Background(), &bossanovav1.RemoveAgentRunHookRequest{})

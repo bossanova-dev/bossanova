@@ -19,6 +19,7 @@ import (
 	"github.com/recurser/bossd/internal/domain"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 	"github.com/recurser/bossd/internal/ghusage"
+	"github.com/recurser/bossd/internal/repoorigin"
 )
 
 // FinalizeResult is the shared outcome of the finalize pipeline.
@@ -990,30 +991,10 @@ func (l *Lifecycle) originURLIfConfigured(ctx context.Context, repo *models.Repo
 	if repo.OriginURL != "" {
 		return repo.OriginURL, nil
 	}
-
-	url, err := l.worktrees.DetectOriginURL(ctx, repo.LocalPath)
-	if err != nil {
-		return "", fmt.Errorf("detect origin URL: %w", err)
+	if _, err := repoorigin.Refresh(ctx, l.worktrees, l.repos, repo, l.logger); err != nil && !errors.Is(err, repoorigin.ErrNoRemote) {
+		return "", err
 	}
-	if url == "" {
-		return "", nil
-	}
-
-	url = gitpkg.CloneURLWithoutCredentials(url)
-
-	if _, err := l.repos.Update(ctx, repo.ID, db.UpdateRepoParams{
-		OriginURL: &url,
-	}); err != nil {
-		return "", fmt.Errorf("persist origin URL: %w", err)
-	}
-
-	l.logger.Info().
-		Str("repo", repo.ID).
-		Str("originURL", gitpkg.RedactURLCredentials(url)).
-		Msg("re-detected and persisted origin URL")
-
-	repo.OriginURL = url
-	return url, nil
+	return repo.OriginURL, nil
 }
 
 // hardDeleteSession performs the MarkArchived → killAllChatTmuxSessions → Delete →

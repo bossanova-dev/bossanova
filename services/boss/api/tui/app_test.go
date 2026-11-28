@@ -1078,3 +1078,47 @@ func TestAppReentersSessionSetup(t *testing.T) {
 		t.Fatal("setup size not seeded")
 	}
 }
+
+type initialRepoPathClient struct {
+	routerClientFixture
+	validatePath string
+	validateResp *pb.ValidateRepoPathResponse
+}
+
+func (c *initialRepoPathClient) ValidateRepoPath(_ context.Context, path string) (*pb.ValidateRepoPathResponse, error) {
+	c.validatePath = path
+	return c.validateResp, nil
+}
+
+func (c *initialRepoPathClient) DetectSetupScript(context.Context, string) (*pb.DetectSetupScriptResponse, error) {
+	return nil, nil
+}
+
+func TestSetInitialRepoPath(t *testing.T) {
+	const dir = "/code/app"
+	c := &initialRepoPathClient{
+		validateResp: &pb.ValidateRepoPathResponse{
+			IsValid:       true,
+			DefaultBranch: "main",
+		},
+	}
+	a := NewApp(c, nil)
+	a.SetInitialView(ui.ViewRepoAdd)
+	a.SetInitialRepoPath(dir)
+
+	cmd := a.Init()
+	if cmd == nil {
+		t.Fatal("App.Init() returned nil cmd")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) < 1 || batch[0] == nil {
+		t.Fatalf("App.Init() produced %T, want tea.BatchMsg with non-nil view cmd", cmd())
+	}
+	msg := batch[0]()
+	if _, ok := msg.(repospkg.RepoValidatedMsg); !ok {
+		t.Fatalf("view Init cmd produced %T, want repos.RepoValidatedMsg", msg)
+	}
+	if c.validatePath != dir {
+		t.Fatalf("ValidateRepoPath path = %q, want %q", c.validatePath, dir)
+	}
+}

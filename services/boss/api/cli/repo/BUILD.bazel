@@ -43,6 +43,7 @@ go_test(
         "project_helpers_test.go",
         "project_identity_test.go",
         "project_test.go",
+        "repo_add_test.go",
         "repo_serve_script_test.go",
         "repo_show_test.go",
         "repo_update_test.go",

@@ -320,7 +320,7 @@ func rootCmdWithGroups(g *skills.Group, daemonGroup daemonCommands) *cobra.Comma
 	// commands that install them.
 	addGrouped("skills", g.Commands()...)
 	settingsGroup := newSettingsGroup()
-	addGrouped("settings", settingsGroup.SettingsCmd(), settingsGroup.ConfigCmd(), settingsGroup.LoginCmd(), settingsGroup.LogoutCmd(), settingsGroup.AuthStatusCmd())
+	addGrouped("settings", settingsGroup.SettingsCmd(), settingsGroup.LoginCmd(), settingsGroup.LogoutCmd(), settingsGroup.AuthStatusCmd())
 	addGrouped("diagnostics", newDiagnosticsGroup().Commands()...)
 	// `boss agents` sits in the plugins group rather than getting one of its
 	// own: agent runners ARE loaded plugins, and the command a reader reaches
@@ -342,7 +342,7 @@ func rootCmdWithGroups(g *skills.Group, daemonGroup daemonCommands) *cobra.Comma
 			return newRemoteClient(cmd, remote)
 		}
 		return newDaemonClient(cmd)
-	}), newGenSkillCmd())
+	}), skills.LegacyConfigInit(), newGenSkillCmd())
 
 	// Installed once on the root, after the whole tree is registered: cobra's
 	// FlagErrorFunc walks up to the parent when a command sets none, so this

@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/recurser/bossd/internal/domain"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/projectconfig"
 	"github.com/recurser/bossalib/models"
 )
 
@@ -24,23 +24,14 @@ func (s *Server) gatingJobIDs() map[string]struct{} {
 	return s.cronScheduler.GatingJobIDs()
 }
 
-// cronManagedByPrefix opens every config-ownership marker on a cron job.
-const cronManagedByPrefix = "boss-project:"
-
-// cronManagedBySlug is the project slug a marker carries after its prefix.
-var cronManagedBySlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-
-// validCronManagedBy accepts the empty string (an unmarked, hand-made job) or
+// validCronManagedBy accepts the empty string (an unmarked, hand-made job),
+// "boss-defaults" (seeded at repository registration), or
 // "boss-project:<slug>". bossd stores the marker and never acts on it; the
 // shape is checked here rather than by a column CHECK so the slug rule is not
 // frozen into SQLite.
 func validCronManagedBy(v string) error {
-	if v == "" {
-		return nil
-	}
-	slug, ok := strings.CutPrefix(v, cronManagedByPrefix)
-	if !ok || !cronManagedBySlug.MatchString(slug) {
-		return fmt.Errorf("invalid managed_by %q: want empty or %s<slug> where slug matches %s", v, cronManagedByPrefix, cronManagedBySlug)
+	if !projectconfig.ValidCronManagedBy(v) {
+		return fmt.Errorf("invalid managed_by %q: want empty, %q, or %s<slug>", v, projectconfig.DefaultsMarker, projectconfig.MarkerPrefix)
 	}
 	return nil
 }
